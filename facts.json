@@ -1,0 +1,12 @@
+{
+  "company": "Avenshift",
+  "caller_intro": "Namaste, main Avenshift ki taraf se AI assistant bol raha hoon. Yeh call record ho sakti hai.",
+  "approved_facts": {
+    "webinar_title": "TBD - Sagar to confirm",
+    "webinar_date_time": "TBD - Sagar to confirm",
+    "course_name": "TBD - Sagar to confirm",
+    "fees": "TBD - Sagar to confirm",
+    "languages": "English, Hindi, Marathi"
+  },
+  "rule": "Only use approved_facts. If a value says TBD or the question is not covered, say you will arrange a callback. Never invent."
+}
