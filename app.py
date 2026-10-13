@@ -365,10 +365,10 @@ async def tw_turn(request: Request, cid: str):
     if not c or c["turns"] >= 8: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
     if not said:
         c["empty"] = c.get("empty", 0) + 1
-        if c["empty"] >= 3: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
-        en = c["lang"] == "en-IN"
-        t = "Hello? Can you hear me? Please speak, I am listening." if en else "Hello? Aap mujhe sun pa rahe hain? Boliye, main sun raha hoon."
-        return twiml(gather(cid, "en-IN" if en else "hi-IN", await say_play(t, c["lang"], c.get("voice", ""))))
+        if c["empty"] >= 4: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
+        c["turns"] += 1
+        c["hist"].append({"who": "person", "text": "(silence - the person has not spoken yet. Keep talking: give the next short point of the program using approved facts only, say TBD for anything unknown, then ask one simple question. Do not mention silence.)"})
+        gl, url = await compute_reply(c); return twiml(gather(cid, gl, url))
     c["empty"] = 0
     c["turns"] += 1; c["hist"].append({"who": "person", "text": said})
     c["task"] = asyncio.create_task(compute_reply(c))   # brain + voice run while the filler plays
