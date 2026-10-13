@@ -1,3 +1,4 @@
+import hmac, hashlib
 import os, io, csv, json, time, base64, random, secrets, asyncio
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
@@ -47,25 +48,33 @@ async def tg_send(text):
     return r.status_code == 200
 
 ORCH_KEY = os.environ.get("ORCH_KEY", "")
+_SEC = (ORCH_KEY or os.environ.get("SHEET_SECRET", "") or "dev").encode()
+def code_for(w): return f"{int(hmac.new(_SEC, ('code%d' % w).encode(), hashlib.sha256).hexdigest()[:8], 16) % 1000000:06d}"
+def make_token():
+    ts = str(int(time.time())); return ts + "." + hmac.new(_SEC, ("tok" + ts).encode(), hashlib.sha256).hexdigest()[:32]
+def valid_token(t):
+    try:
+        ts, sig = t.split(".", 1)
+        return time.time() - int(ts) < 30 * 86400 and secrets.compare_digest(sig, hmac.new(_SEC, ("tok" + ts).encode(), hashlib.sha256).hexdigest()[:32])
+    except Exception: return False
 def auth(tok):
     if tok and ORCH_KEY and secrets.compare_digest(tok, ORCH_KEY): return
-    if not tok or tok not in sessions: raise HTTPException(401, "login first")
+    if tok and valid_token(tok): return
+    raise HTTPException(401, "login first")
 
 @app.post("/auth/request")
 async def auth_request():
-    code = f"{random.randint(0, 999999):06d}"
-    codes["c"] = (code, time.time() + 600)
+    code = code_for(int(time.time() // 600))
     ok = await tg_send(f"Avenshift Voice login code: {code} (10 min)")
     if not ok: raise HTTPException(400, "Pehle Telegram pe @avenshift_bot ko 'hi' bhej, phir dubara try kar.")
     return {"ok": True}
 
 @app.post("/auth/verify")
 async def auth_verify(code: str = Form(...)):
-    c = codes.get("c")
-    if not c or time.time() > c[1] or not secrets.compare_digest(c[0], code.strip()):
+    w = int(time.time() // 600)
+    if not any(secrets.compare_digest(code_for(x), code.strip()) for x in (w, w - 1)):
         raise HTTPException(403, "galat code")
-    t = secrets.token_hex(16); sessions[t] = time.time(); codes.pop("c", None)
-    return {"token": t}
+    return {"token": make_token()}
 
 @app.get("/variants")
 def variants(): return {k: {"name": v[0], "ready": (v[1] != "deepgram" or bool(DEEPGRAM)) and (v[2] == "gemini" and bool(GEMINI) or any(f[0] == v[2] and os.environ.get(f[2]) for f in FALLBACKS))} for k, v in VARIANTS.items()}
