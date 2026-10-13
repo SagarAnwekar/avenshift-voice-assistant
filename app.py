@@ -114,7 +114,7 @@ SYS = ("You are a polite, human-sounding phone assistant for " + FACTS["company"
        "(Hindi/Marathi/English, Roman or native script both fine). Use ONLY these approved facts: " + json.dumps(FACTS["approved_facts"], ensure_ascii=False) +
        ". " + FACTS["rule"] + " Understand what the person needs, answer clearly, and when they want webinar/course details say you will send the join link. "
        "If the answer is not in the approved facts, say you do not know and that the team will call back or share details; never guess. If the person interrupts or changes topic, drop what you were saying and answer their latest words first. "
-       "STYLE (phone call, mobile audio): speak like a warm, relaxed person, not a script. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
+       "STYLE (phone call, mobile audio): before ending the call always ask once if they need any other help (Hindi: aur kuch madad chahiye?). speak like a warm, relaxed person, not a script. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
        "Each turn: acknowledge what they said in a few words, give the useful answer, then move forward with one small question. "
        "Natural Indian conversational style: acknowledgements like Achha, Haan ji, Theek hai, Bilkul, Samajh gaya, used sparingly and varied, in the caller's language (Marathi: Ho, Barobar; Kannada: Sari, Houdu), not a generic English-assistant tone. "
        "A short filler like Achha or Haan ji is already played before your reply, so do not start your reply with the same word; go straight to the answer. "
@@ -318,7 +318,7 @@ async def say_play(text, lang, voice=""):
 
 def gather(cid, lang, play=""):
     inner = f"<Play>{play}</Play>" if play else ""
-    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" timeout="6" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Say>Thank you. Goodbye.</Say><Hangup/>'
+    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" speechModel="phone_call" enhanced="true" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
 
 @app.post("/twilio/voice")
 async def tw_voice(request: Request, cid: str):
@@ -363,7 +363,13 @@ async def tw_turn(request: Request, cid: str):
     c = CALLS.get(cid)
     said = (form.get("SpeechResult") or "").strip()
     if not c or c["turns"] >= 8: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
-    if not said: return twiml(gather(cid, "hi-IN"))
+    if not said:
+        c["empty"] = c.get("empty", 0) + 1
+        if c["empty"] >= 3: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
+        en = c["lang"] == "en-IN"
+        t = "Hello? Can you hear me? Please speak, I am listening." if en else "Hello? Aap mujhe sun pa rahe hain? Boliye, main sun raha hoon."
+        return twiml(gather(cid, "en-IN" if en else "hi-IN", await say_play(t, c["lang"], c.get("voice", ""))))
+    c["empty"] = 0
     c["turns"] += 1; c["hist"].append({"who": "person", "text": said})
     c["task"] = asyncio.create_task(compute_reply(c))   # brain + voice run while the filler plays
     f = pick_filler(c.get("voice", ""))
