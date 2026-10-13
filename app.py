@@ -14,6 +14,15 @@ STATE = "/tmp/state.json"
 FACTS = json.load(open(os.path.join(os.path.dirname(__file__), "facts.json")))
 sessions, codes = {}, {}
 
+SHEET_URL = os.environ.get("SHEET_WEBHOOK_URL", ""); SHEET_SECRET = os.environ.get("SHEET_SECRET", "")
+async def sheet(payload):
+    if not SHEET_URL: return None
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+            r = await c.post(SHEET_URL, json={"secret": SHEET_SECRET, **payload})
+        return r.json()
+    except Exception: return None
+
 def load():
     try: return json.load(open(STATE))
     except Exception: return {"contacts": [], "calls": []}
@@ -37,7 +46,9 @@ async def tg_send(text):
         r = await c.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json={"chat_id": chat, "text": text[:4000]})
     return r.status_code == 200
 
+ORCH_KEY = os.environ.get("ORCH_KEY", "")
 def auth(tok):
+    if tok and ORCH_KEY and secrets.compare_digest(tok, ORCH_KEY): return
     if not tok or tok not in sessions: raise HTTPException(401, "login first")
 
 @app.post("/auth/request")
@@ -56,8 +67,11 @@ async def auth_verify(code: str = Form(...)):
     t = secrets.token_hex(16); sessions[t] = time.time(); codes.pop("c", None)
     return {"token": t}
 
+@app.get("/variants")
+def variants(): return {k: {"name": v[0], "ready": (v[1] != "deepgram" or bool(DEEPGRAM)) and (v[2] == "gemini" and bool(GEMINI) or any(f[0] == v[2] and os.environ.get(f[2]) for f in FALLBACKS))} for k, v in VARIANTS.items()}
+
 @app.get("/health")
-def health(): return {"ok": True, "sarvam": bool(SARVAM), "gemini": bool(GEMINI), "telegram": bool(TG_TOKEN)}
+def health(): return {"ok": True, "sarvam": bool(SARVAM), "gemini": bool(GEMINI), "telegram": bool(TG_TOKEN), "fallbacks": [n for n,_,k,_ in FALLBACKS if os.environ.get(k)]}
 
 @app.post("/contacts")
 async def contacts(file: UploadFile = File(...), x_token: str = Header(None)):
@@ -66,7 +80,16 @@ async def contacts(file: UploadFile = File(...), x_token: str = Header(None)):
     out = []
     for r in rows:
         k = {a.strip().lower(): (b or "").strip() for a, b in r.items() if a}
-        if k.get("name") and k.get("phone"): out.append({"name": k["name"], "phone": k["phone"], "status": "pending"})
+        if k.get("name") and k.get("phone"): out.append({"name": k["name"], "phone": k["phone"], "registered": k.get("registered", "").lower() in ("yes","y","true","1"), "status": "pending"})
+    s = load(); s["contacts"] = out; save(s)
+    return {"count": len(out)}
+
+@app.post("/contacts/sync")
+async def contacts_sync(x_token: str = Header(None)):
+    auth(x_token)
+    r = await sheet({"action": "contacts"})
+    if not r or not r.get("ok"): raise HTTPException(502, "sheet not connected")
+    out = [{"name": c["name"], "phone": c["phone"], "registered": c["registered"].lower() in ("yes","y","true","1"), "status": "pending" if c["status"] in ("", "pending") else "done"} for c in r["contacts"]]
     s = load(); s["contacts"] = out; save(s)
     return {"count": len(out)}
 
@@ -75,54 +98,137 @@ def nxt(x_token: str = Header(None)):
     auth(x_token)
     s = load()
     for c in s["contacts"]:
-        if c["status"] == "pending": return {"contact": c, "intro": FACTS["caller_intro"], "left": sum(1 for z in s["contacts"] if z["status"] == "pending")}
+        if c["status"] == "pending": return {"contact": c, "intro": FACTS["caller_intro"], "intro_en": FACTS["caller_intro_en"], "rem": FACTS["caller_intro_reminder"], "rem_en": FACTS["caller_intro_reminder_en"], "left": sum(1 for z in s["contacts"] if z["status"] == "pending")}
     return {"contact": None, "left": 0}
 
 SYS = ("You are a polite, human-sounding phone assistant for " + FACTS["company"] + ". Speak short (1-2 sentences), in the same language the person uses "
        "(Hindi/Marathi/English, Roman or native script both fine). Use ONLY these approved facts: " + json.dumps(FACTS["approved_facts"], ensure_ascii=False) +
        ". " + FACTS["rule"] + " Understand what the person needs, answer clearly, and when they want webinar/course details say you will send the join link. "
-       "Do not claim to be human if asked.")
+       "If the answer is not in the approved facts, say you do not know and that the team will call back or share details; never guess. If the person interrupts or changes topic, drop what you were saying and answer their latest words first. "
+       "STYLE (phone call, mobile audio): speak like a warm, relaxed person, not a script. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
+       "Each turn: acknowledge what they said in a few words, give the useful answer, then move forward with one small question. "
+       "Natural Indian conversational style: acknowledgements like Achha, Haan ji, Theek hai, Bilkul, Samajh gaya, used sparingly and varied, in the caller's language (Marathi: Ho, Barobar; Kannada: Sari, Houdu), not a generic English-assistant tone. "
+       "A short filler like Achha or Haan ji is already played before your reply, so do not start your reply with the same word; go straight to the answer. "
+       "No markdown, no lists, no brackets, no emojis. Say dates in words (Thursday, fifteenth October, shaam saat baje). Mirror their language and Hinglish mix. "
+       "If you did not catch something, politely ask them to repeat; after 3 failed tries offer a callback and end kindly. If they say not interested, thank them and stop, no pressure. "
+       "Never say 'let me check' or 'one moment'. Do not claim to be human if asked.")
 
-async def gemini(contents, system=SYS, json_out=False):
-    body = {"system_instruction": {"parts": [{"text": system}]}, "contents": contents}
-    if json_out: body["generationConfig"] = {"responseMimeType": "application/json"}
+DEMO_NOTE = (" DEMO TEST CALL: for this call only, the placeholder webinar is " + FACTS["demo_only"]["session_date_time"] + "; the join link is TBD (will be shared in chat). "
+              "Say clearly that this date is a demo/placeholder and not final.")
+import re
+def clean_reply(t):
+    t = re.sub(r"[*_`#>\[\]]+", "", t); t = re.sub(r"\s+", " ", t).strip()
+    s = re.split(r"(?<=[.!?।])\s+", t)
+    return " ".join(s[:3])[:400]
+
+def sys_for(phone): return SYS + (DEMO_NOTE if phone in ALLOWED else "")
+
+FALLBACKS = [
+    ("sarvam", "https://api.sarvam.ai/v1/chat/completions", "SARVAM_API_KEY", os.environ.get("SARVAM_CHAT_MODEL", "sarvam-105b-conversations")),
+    ("groq", "https://api.groq.com/openai/v1/chat/completions", "GROQ_API_KEY", os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")),
+    ("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", "NVIDIA_API_KEY", os.environ.get("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct")),
+    ("openrouter", "https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY", os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")),
+]
+
+async def gemini(contents, system=SYS, json_out=False, brain=""):
+    """Brain with fallback chain: Gemini -> Groq -> NVIDIA -> OpenRouter (only those with keys set)."""
+    errs = []
+    if GEMINI and brain in ("", "gemini"):
+        body = {"system_instruction": {"parts": [{"text": system}]}, "contents": contents}
+        if json_out: body["generationConfig"] = {"responseMimeType": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=40) as c:
+                r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GMODEL}:generateContent", headers={"x-goog-api-key": GEMINI}, json=body)
+            if r.status_code == 200: return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            errs.append(f"gemini {r.status_code}")
+        except Exception as e: errs.append(f"gemini {type(e).__name__}")
+    msgs = [{"role": "system", "content": system + (" Respond with JSON only." if json_out else "")}] + [
+        {"role": "assistant" if c["role"] == "model" else "user", "content": c["parts"][0]["text"]} for c in contents]
+    order = sorted(FALLBACKS, key=lambda f: 0 if f[0] == brain else 1)
+    for name, url, envk, model in order:
+        key = os.environ.get(envk, "")
+        if not key: continue
+        try:
+            async with httpx.AsyncClient(timeout=40) as c:
+                r = await c.post(url, headers={"Authorization": "Bearer " + key}, json={"model": model, "messages": msgs, "temperature": 0.4})
+            if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
+            errs.append(f"{name} {r.status_code}")
+        except Exception as e: errs.append(f"{name} {type(e).__name__}")
+    if GEMINI and brain not in ("", "gemini"):
+        return await gemini(contents, system, json_out, "gemini")
+    raise HTTPException(502, "brain failed: " + ", ".join(errs))
+
+def notes_for(phone):
+    s = load(); n = s.get("notes", {}).get(phone)
+    return n
+
+DEEPGRAM = os.environ.get("DEEPGRAM_API_KEY", "")
+async def stt_deepgram(data):
     async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GMODEL}:generateContent", headers={"x-goog-api-key": GEMINI}, json=body)
-    if r.status_code != 200: raise HTTPException(502, f"gemini {r.status_code}: {r.text[:200]}")
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        r = await c.post("https://api.deepgram.com/v1/listen?model=nova-3&detect_language=true&smart_format=true", headers={"Authorization": "Token " + DEEPGRAM, "Content-Type": "application/octet-stream"}, content=data)
+    if r.status_code != 200: raise HTTPException(502, f"deepgram {r.status_code}: {r.text[:200]}")
+    ch = r.json()["results"]["channels"][0]
+    return ch["alternatives"][0].get("transcript", ""), {"hi": "hi-IN", "en": "en-IN", "mr": "mr-IN", "kn": "kn-IN"}.get((ch.get("detected_language") or "hi")[:2], "hi-IN")
 
-async def stt(data, name):
+VARIANTS = {"A": ("Sarvam STT + Gemini + Sarvam voice", "sarvam", "gemini"), "B": ("Sarvam STT + Groq + Sarvam voice", "sarvam", "groq"),
+            "C": ("Sarvam STT + NVIDIA + Sarvam voice", "sarvam", "nvidia"), "D": ("Deepgram STT + Gemini + Sarvam voice", "deepgram", "gemini"),
+            "E": ("Sarvam STT + OpenRouter + Sarvam voice", "sarvam", "openrouter")}
+
+async def stt(data, name, engine="sarvam"):
+    if engine == "deepgram" and DEEPGRAM: return await stt_deepgram(data)
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post("https://api.sarvam.ai/speech-to-text", headers={"api-subscription-key": SARVAM},
                          files={"file": (name, data, "application/octet-stream")}, data={"model": "saaras:v3", "mode": "codemix", "language_code": "unknown"})
     if r.status_code != 200: raise HTTPException(502, f"stt {r.status_code}: {r.text[:200]}")
     j = r.json(); return j.get("transcript", ""), j.get("language_code") or "hi-IN"
 
-async def tts(text, lang):
+def pick_voice(voice, lang):
+    v = (voice or os.environ.get("SARVAM_SPEAKER", "shubh")).lower()
+    if v == "ashutosh" and lang != "hi-IN": v = "ratan"
+    return v if v in ("shubh", "ratan", "ashutosh", "priya", "ritu", "ishita") else "shubh"
+
+async def tts(text, lang, voice=""):
     lang = lang if lang in ("hi-IN","mr-IN","en-IN","kn-IN","ta-IN","te-IN","bn-IN","gu-IN","ml-IN","pa-IN","od-IN") else "hi-IN"
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
-                         json={"text": text[:2400], "language_code": lang, "model": "bulbul:v3", "speaker": "ritu", "output_audio_codec": "mp3"})
+                         json={"text": text[:2400], "language_code": lang, "model": "bulbul:v3", "speaker": pick_voice(voice, lang), "pace": 1.0, "temperature": 0.6, "output_audio_codec": "mp3"})
     if r.status_code != 200: raise HTTPException(502, f"tts {r.status_code}: {r.text[:200]}")
     return r.json()["audios"][0]
 
 @app.post("/turn")
-async def turn(audio: UploadFile = File(...), history: str = Form("[]"), x_token: str = Header(None)):
+async def turn(audio: UploadFile = File(...), history: str = Form("[]"), phone: str = Form(""), variant: str = Form("A"), voice: str = Form(""), x_token: str = Header(None)):
     auth(x_token)
-    text, lang = await stt(await audio.read(), audio.filename or "a.webm")
-    hist = json.loads(history)
+    _, engine, brain = VARIANTS.get(variant, VARIANTS["A"])
+    t0 = time.time()
+    text, lang = await stt(await audio.read(), audio.filename or "a.webm", engine)
+    t_stt = time.time() - t0
+    hist = json.loads(history)[-24:]
+    memo = notes_for(phone)
+    sysm = sys_for(phone) + ((" Notes from earlier calls with this person (use naturally, do not recite): " + json.dumps(memo, ensure_ascii=False)) if memo else "")
     if not text.strip(): return {"heard": "", "reply": "", "audio": ""}
     contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in hist]
     contents.append({"role": "user", "parts": [{"text": text}]})
-    reply = (await gemini(contents)).strip()
-    return {"heard": text, "reply": reply, "audio": await tts(reply, lang), "lang": lang}
+    raw = await gemini(contents, system=sysm + ' Return JSON only: {"reply":"<your spoken reply>","lang":"<BCP-47 of the reply: hi-IN, en-IN, mr-IN or kn-IN>"}', json_out=True, brain=brain)
+    t_brain = time.time() - t0 - t_stt
+    try:
+        j = json.loads(raw); reply = clean_reply(str(j["reply"])); lang = j.get("lang") or lang
+    except Exception:
+        reply = raw.strip()
+    au = await tts(reply, lang, voice)
+    return {"heard": text, "reply": reply, "audio": au, "lang": lang, "variant": variant, "secs": {"stt": round(t_stt,2), "brain": round(t_brain,2), "total": round(time.time()-t0,2)}}
 
 @app.post("/speak")
-async def speak(text: str = Form(...), lang: str = Form("hi-IN"), x_token: str = Header(None)):
-    auth(x_token); return {"audio": await tts(text, lang)}
+async def speak(text: str = Form(...), lang: str = Form("hi-IN"), voice: str = Form(""), x_token: str = Header(None)):
+    auth(x_token); return {"audio": await tts(text, lang, voice)}
 
 ANALYSE = ('Read this call transcript. Return JSON: {"interest":"interested|callback|not_interested|unclear","summary":"2 lines",'
-           '"needs":"what they asked","callback_time":"if said else empty","whatsapp_message":"short message with webinar details using ONLY approved facts and placeholder [JOIN LINK]"}')
+           '"needs":"what they asked","email":"email if they gave one else empty","language":"language used","questions":"their questions",'
+           '"callback_time":"if said else empty","whatsapp_message":"short message with webinar details using ONLY approved facts and placeholder [JOIN LINK]"}')
+
+def build_email(name, phone, a, transcript):
+    # PLACEHOLDER format. Replace with Sagar's sample format once he sends 4-5 emails.
+    return ("Subject: Call report - %s (%s)\n\nResult: %s\nSummary: %s\nQuestions asked: %s\nLanguage: %s\nEmail given: %s\nCallback: %s\n\nTranscript:\n%s"
+            % (name, phone, a.get("interest"), a.get("summary"), a.get("questions", ""), a.get("language", ""), a.get("email", "") or "none (share details via chat)", a.get("callback_time", ""), transcript))
 
 @app.post("/end")
 async def end(phone: str = Form(...), name: str = Form(...), transcript: str = Form(...), x_token: str = Header(None)):
@@ -134,6 +240,11 @@ async def end(phone: str = Form(...), name: str = Form(...), transcript: str = F
     for c in s["contacts"]:
         if c["phone"] == phone and c["status"] == "pending": c["status"] = "done"
     s["calls"].append({"name": name, "phone": phone, "t": time.time(), "transcript": transcript, **a}); save(s)
+    s.setdefault("notes", {})[phone] = {"last_summary": a.get("summary"), "language": a.get("language"), "email": a.get("email"), "interest": a.get("interest"), "callback_time": a.get("callback_time"), "questions": a.get("questions")}; save(s)
+    a["email_draft"] = build_email(name, phone, a, transcript)
+    await sheet({"action": "call", "name": name, "phone": phone, **{k: a.get(k, "") for k in ("interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft")}})
+    s["calls"][-1]["email_draft"] = a["email_draft"]; save(s)
+    await tg_send(f"EMAIL DRAFT (format pending Sagar's samples, not sent):\n{a['email_draft']}")
     await tg_send(f"Call done: {name} ({phone})\nResult: {a.get('interest')}\n{a.get('summary')}\nNeeds: {a.get('needs','')}\nCallback: {a.get('callback_time','')}\n\nWhatsApp draft (NOT sent):\n{a.get('whatsapp_message','')}")
     return a
 
@@ -147,6 +258,132 @@ async def report(hours: float = Form(4), x_token: str = Header(None)):
         m = [c for c in rows if c.get("interest") == k]
         if m: lines.append(f"{label}: " + ", ".join(f"{c['name']} ({c['phone']})" for c in m))
     txt = "\n".join(lines); await tg_send(txt); return {"report": txt}
+
+
+# ---------------- Twilio phone test (own number only) ----------------
+import hmac, hashlib, uuid
+from fastapi import Request
+from fastapi.responses import Response
+TW_SID = os.environ.get("TWILIO_ACCOUNT_SID", ""); TW_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", ""); TW_FROM = os.environ.get("TWILIO_FROM", "")
+PUBLIC = os.environ.get("PUBLIC_URL", "https://avenshift-voice-assistant.onrender.com")
+ALLOWED = [x.strip() for x in os.environ.get("ALLOWED_CALL_NUMBERS", "+919370727222").split(",") if x.strip()]
+AUDIO, CALLS = {}, {}
+
+def twiml(body): return Response('<?xml version="1.0" encoding="UTF-8"?><Response>' + body + "</Response>", media_type="application/xml")
+
+async def tw_check(request: Request, form):
+    sig = request.headers.get("X-Twilio-Signature", "")
+    url = PUBLIC + request.url.path + (("?" + request.url.query) if request.url.query else "")
+    data = url + "".join(k + form[k] for k in sorted(form.keys()))
+    mac = base64.b64encode(hmac.new(TW_TOKEN.encode(), data.encode(), hashlib.sha1).digest()).decode()
+    if not TW_TOKEN or not hmac.compare_digest(mac, sig): raise HTTPException(403, "bad signature")
+
+@app.post("/twilio/call")
+async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("enq"), lang: str = Form("hi-IN"), variant: str = Form("A"), voice: str = Form(""), x_token: str = Header(None)):
+    auth(x_token)
+    if to not in ALLOWED: raise HTTPException(403, "number not allowed (test numbers only)")
+    if not (TW_SID and TW_TOKEN and TW_FROM): raise HTTPException(400, "Twilio not configured")
+    cid = uuid.uuid4().hex[:10]
+    CALLS[cid] = {"name": name, "phone": to, "hist": [], "lang": lang, "mode": mode, "turns": 0, "variant": variant, "voice": voice}
+    await prep_fillers(voice)
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN),
+            data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/twilio/voice?cid={cid}", "StatusCallback": f"{PUBLIC}/twilio/status?cid={cid}", "StatusCallbackEvent": "completed"})
+    if r.status_code >= 300: raise HTTPException(502, "twilio: " + r.text[:200])
+    return {"ok": True, "cid": cid}
+
+@app.get("/audio/{aid}.mp3")
+def get_audio(aid: str):
+    b = AUDIO.get(aid)
+    if not b: raise HTTPException(404)
+    return Response(base64.b64decode(b), media_type="audio/mpeg")
+
+async def say_play(text, lang, voice=""):
+    aid = uuid.uuid4().hex[:12]; AUDIO[aid] = await tts(text, lang, voice)
+    return f"{PUBLIC}/audio/{aid}.mp3"
+
+def gather(cid, lang, play=""):
+    inner = f"<Play>{play}</Play>" if play else ""
+    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" timeout="6" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Say>Thank you. Goodbye.</Say><Hangup/>'
+
+@app.post("/twilio/voice")
+async def tw_voice(request: Request, cid: str):
+    form = dict(await request.form()); await tw_check(request, form)
+    c = CALLS.get(cid)
+    if not c: return twiml("<Hangup/>")
+    en = c["lang"] == "en-IN"
+    if c["mode"] == "rem": t = (FACTS["caller_intro_reminder_en"] if en else FACTS["caller_intro_reminder"]).replace("{name}", c["name"])
+    else: t = ("Hi " + c["name"] + ". " + FACTS["caller_intro_en"]) if en else (c["name"] + " ji, " + FACTS["caller_intro"])
+    c["hist"].append({"who": "agent", "text": t})
+    return twiml(gather(cid, "en-IN" if en else "hi-IN", await say_play(t, c["lang"], c.get("voice",""))))
+
+FILLERS = ["Achha...", "Haan ji...", "Theek hai...", "Bilkul..."]
+FILLER_AUDIO = {}  # (voice, i) -> aid
+
+async def prep_fillers(voice):
+    for i, t in enumerate(FILLERS):
+        k = (pick_voice(voice, "hi-IN"), i)
+        if k in FILLER_AUDIO: continue
+        try:
+            aid = "f" + uuid.uuid4().hex[:10]; AUDIO[aid] = await tts(t, "hi-IN", voice); FILLER_AUDIO[k] = aid
+        except Exception: pass
+
+def pick_filler(voice):
+    ks = [k for k in FILLER_AUDIO if k[0] == pick_voice(voice, "hi-IN")]
+    return f"{PUBLIC}/audio/{FILLER_AUDIO[random.choice(ks)]}.mp3" if ks else ""
+
+async def compute_reply(c):
+    memo = notes_for(c["phone"])
+    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
+    contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in c["hist"][-24:]]
+    raw = await gemini(contents, system=sysm, json_out=True, brain=VARIANTS.get(c.get("variant","A"), VARIANTS["A"])[2])
+    try: j = json.loads(raw); reply, lang = clean_reply(str(j["reply"])), j.get("lang") or "hi-IN"
+    except Exception: reply, lang = clean_reply(raw), "hi-IN"
+    c["hist"].append({"who": "agent", "text": reply})
+    gl = {"hi-IN": "hi-IN", "en-IN": "en-IN", "mr-IN": "mr-IN", "kn-IN": "kn-IN"}.get(lang, "hi-IN")
+    return gl, await say_play(reply, lang, c.get("voice", ""))
+
+@app.post("/twilio/turn")
+async def tw_turn(request: Request, cid: str):
+    form = dict(await request.form()); await tw_check(request, form)
+    c = CALLS.get(cid)
+    said = (form.get("SpeechResult") or "").strip()
+    if not c or c["turns"] >= 8: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
+    if not said: return twiml(gather(cid, "hi-IN"))
+    c["turns"] += 1; c["hist"].append({"who": "person", "text": said})
+    c["task"] = asyncio.create_task(compute_reply(c))   # brain + voice run while the filler plays
+    f = pick_filler(c.get("voice", ""))
+    if f: return twiml(f"<Play>{f}</Play><Redirect method=\"POST\">{PUBLIC}/twilio/reply?cid={cid}</Redirect>")
+    gl, url = await c["task"]; return twiml(gather(cid, gl, url))
+
+@app.post("/twilio/reply")
+async def tw_reply(request: Request, cid: str):
+    form = dict(await request.form()); await tw_check(request, form)
+    c = CALLS.get(cid)
+    if not c or not c.get("task"): return twiml("<Hangup/>")
+    try: gl, url = await c["task"]
+    except Exception: return twiml("<Say>Sorry, network issue. We will call you back. Goodbye.</Say><Hangup/>")
+    return twiml(gather(cid, gl, url))
+
+@app.post("/twilio/status")
+async def tw_status(request: Request, cid: str):
+    form = dict(await request.form()); await tw_check(request, form)
+    c = CALLS.pop(cid, None)
+    if c and c["hist"]:
+        tr = "\n".join(("AGENT: " if h["who"] == "agent" else "PERSON: ") + h["text"] for h in c["hist"])
+        raw = await gemini([{"role": "user", "parts": [{"text": tr}]}], system=ANALYSE + " Approved facts: " + json.dumps(FACTS["approved_facts"]), json_out=True)
+        try: a = json.loads(raw)
+        except Exception: a = {"interest": "unclear", "summary": raw[:200]}
+        s = load(); s["calls"].append({"name": c["name"], "phone": c["phone"], "t": time.time(), "transcript": tr, "via": "twilio", **a})
+        s.setdefault("notes", {})[c["phone"]] = {"last_summary": a.get("summary"), "language": a.get("language"), "email": a.get("email"), "interest": a.get("interest")}; save(s)
+        await sheet({"action": "call", "name": c["name"], "phone": c["phone"], "email_draft": build_email(c["name"], c["phone"], a, tr), **{k: a.get(k, "") for k in ("interest","summary","needs","questions","language","email","callback_time","whatsapp_message")}})
+        await tg_send("PHONE TEST CALL done: " + c["name"] + "\nResult: " + str(a.get("interest")) + "\n" + str(a.get("summary")) + "\n\n" + build_email(c["name"], c["phone"], a, tr))
+    return Response("ok")
+
+@app.get("/calls")
+def calls(since: float = 0, x_token: str = Header(None)):
+    auth(x_token)
+    return {"calls": [{k: c.get(k) for k in ("name","phone","t","interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft")} for c in load()["calls"] if c["t"] > since]}
 
 @app.get("/")
 def home(): return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
