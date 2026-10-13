@@ -172,6 +172,7 @@ async def stt_deepgram(data):
 
 VARIANTS = {"A": ("Sarvam STT + Gemini + Sarvam voice", "sarvam", "gemini"), "B": ("Sarvam STT + Groq + Sarvam voice", "sarvam", "groq"),
             "C": ("Sarvam STT + NVIDIA + Sarvam voice", "sarvam", "nvidia"), "D": ("Deepgram STT + Gemini + Sarvam voice", "deepgram", "gemini"),
+            "F": ("All-Sarvam: STT + sarvam-105b-conversations + voice", "sarvam", "sarvam"),
             "E": ("Sarvam STT + OpenRouter + Sarvam voice", "sarvam", "openrouter")}
 
 async def stt(data, name, engine="sarvam"):
