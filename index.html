@@ -1,0 +1,38 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Avenshift Voice</title>
+<style>body{font-family:system-ui;background:#111;color:#eee;max-width:520px;margin:0 auto;padding:16px}
+button{background:#ff7a1a;border:0;color:#111;font-size:18px;padding:14px 18px;border-radius:12px;margin:6px 0;width:100%}
+button.g{background:#333;color:#eee}input{width:100%;padding:12px;font-size:18px;border-radius:10px;border:0;margin:6px 0;box-sizing:border-box}
+#log{background:#1b1b1b;border-radius:10px;padding:10px;min-height:120px;white-space:pre-wrap}.hide{display:none}</style></head><body>
+<h2>Avenshift Voice</h2>
+<div id="login"><p>Telegram (@avenshift_bot) pe code aayega.</p><button onclick="req()">Code bhej</button>
+<input id="code" placeholder="6-digit code" inputmode="numeric"><button onclick="ver()">Login</button></div>
+<div id="app" class="hide">
+<input type="file" id="csv" accept=".csv"><button class="g" onclick="up()">Contacts upload (name,phone CSV)</button>
+<button onclick="nextCall()">Agla call shuru</button>
+<button id="rec" class="hide" onclick="toggle()">🎤 Bol (dabake bol, phir dubara dab)</button>
+<button id="end" class="hide g" onclick="endCall()">Call khatam + report bhej</button>
+<button class="g" onclick="rep()">4-ghante ka report Telegram pe</button>
+<div id="log"></div></div>
+<script>
+let T=localStorage.t||"",cur=null,hist=[],mr=null,chunks=[],aud=null;
+const $=i=>document.getElementById(i),log=m=>{$("log").textContent+=m+"\n"};
+const H=()=>({"x-token":T});
+async function J(u,o){const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.detail||r.status);return j}
+function show(){if(T){$("login").classList.add("hide");$("app").classList.remove("hide")}}show();
+async function req(){try{await J("/auth/request",{method:"POST"});alert("Code Telegram pe bheja")}catch(e){alert(e.message)}}
+async function ver(){const f=new FormData();f.append("code",$("code").value);try{T=(await J("/auth/verify",{method:"POST",body:f})).token;localStorage.t=T;show()}catch(e){alert(e.message)}}
+async function up(){const f=new FormData();f.append("file",$("csv").files[0]);try{log("Contacts: "+(await J("/contacts",{method:"POST",body:f,headers:H()})).count)}catch(e){log(e.message)}}
+function play(b64){if(aud)aud.pause();aud=new Audio("data:audio/mpeg;base64,"+b64);aud.play()}
+async function say(t,l){const f=new FormData();f.append("text",t);f.append("lang",l||"hi-IN");play((await J("/speak",{method:"POST",body:f,headers:H()})).audio)}
+async function nextCall(){try{const n=await J("/next",{headers:H()});if(!n.contact){log("Koi pending contact nahi");return}
+cur=n.contact;hist=[];log("Call: "+cur.name+" "+cur.phone);const t=cur.name+" ji, "+n.intro;hist.push({who:"agent",text:t});log("AI: "+t);await say(t);$("rec").classList.remove("hide");$("end").classList.remove("hide")}catch(e){log(e.message)}}
+async function toggle(){if(mr&&mr.state=="recording"){mr.stop();$("rec").textContent="⏳...";return}
+if(aud)aud.pause();const s=await navigator.mediaDevices.getUserMedia({audio:true});mr=new MediaRecorder(s);chunks=[];mr.ondataavailable=e=>chunks.push(e.data);
+mr.onstop=async()=>{s.getTracks().forEach(x=>x.stop());const f=new FormData();f.append("audio",new Blob(chunks,{type:mr.mimeType}),"a.webm");f.append("history",JSON.stringify(hist));
+try{const j=await J("/turn",{method:"POST",body:f,headers:H()});if(j.heard){hist.push({who:"person",text:j.heard});hist.push({who:"agent",text:j.reply});log("Tu: "+j.heard);log("AI: "+j.reply);play(j.audio)}else log("(kuch sunai nahi diya)")}catch(e){log(e.message)}$("rec").textContent="🎤 Bol (dabake bol, phir dubara dab)"};
+mr.start();$("rec").textContent="⏺ sun raha hu... (dubara dab = bhej)"}
+async function endCall(){const f=new FormData();f.append("phone",cur.phone);f.append("name",cur.name);f.append("transcript",hist.map(h=>(h.who=="agent"?"AGENT: ":"PERSON: ")+h.text).join("\n"));
+try{const a=await J("/end",{method:"POST",body:f,headers:H()});log("Result: "+a.interest+" - "+a.summary+" (Telegram pe bheja)");$("rec").classList.add("hide");$("end").classList.add("hide")}catch(e){log(e.message)}}
+async function rep(){const f=new FormData();f.append("hours","4");try{log((await J("/report",{method:"POST",body:f,headers:H()})).report)}catch(e){log(e.message)}}
+</script></body></html>
