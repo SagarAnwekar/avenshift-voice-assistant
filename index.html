@@ -8,11 +8,12 @@ button.g{background:#333;color:#eee}input{width:100%;padding:12px;font-size:18px
 <div id="login"><p>Telegram (@avenshift_bot) pe code aayega.</p><button onclick="req()">Code bhej</button>
 <input id="code" placeholder="6-digit code" inputmode="numeric"><button onclick="ver()">Login</button></div>
 <div id="app" class="hide">
-<input type="file" id="csv" accept=".csv"><button class="g" onclick="up()">Contacts upload (name,phone CSV)</button>
-<button onclick="nextCall()">Agla call shuru</button>
+<input type="file" id="csv" accept=".csv"><button class="g" onclick="syn()">Google Sheet se contacts load</button><button class="g" onclick="up()">Contacts upload (name,phone CSV)</button>
+<select id="var" style="width:100%;padding:12px;font-size:18px;border-radius:10px;margin-bottom:6px"><option value="A">A: Sarvam+Gemini</option><option value="B">B: Sarvam+Groq</option><option value="C">C: Sarvam+NVIDIA</option><option value="D">D: Deepgram STT+Gemini</option><option value="F">F: All-Sarvam (105b brain)</option><option value="E">E: Sarvam+OpenRouter</option></select><select id="voice" style="width:100%;padding:12px;font-size:18px;border-radius:10px;margin-bottom:6px"><option value="shubh">Awaaz 1: Shubh (male)</option><option value="ratan">Awaaz 2: Ratan (male)</option><option value="ashutosh">Awaaz 3: Ashutosh (male, Hindi)</option></select><button class="g" onclick="vs()">Kaun sa variant ready hai?</button>
+<select id="lang" style="width:100%;padding:12px;font-size:18px;border-radius:10px"><option value="hi-IN">Hindi intro</option><option value="en-IN">English intro</option></select><select id="mode" style="width:100%;padding:12px;font-size:18px;border-radius:10px;margin-top:6px"><option value="enq">Enquiry call</option><option value="rem">Reminder call (registered only)</option></select><button onclick="nextCall()">Agla call shuru</button>
 <button id="rec" class="hide" onclick="toggle()">🎤 Bol (dabake bol, phir dubara dab)</button>
 <button id="end" class="hide g" onclick="endCall()">Call khatam + report bhej</button>
-<button class="g" onclick="rep()">4-ghante ka report Telegram pe</button>
+<button class="g" onclick="phone()">📞 Mere number pe test call (+919370727222)</button><button class="g" onclick="rep()">4-ghante ka report Telegram pe</button>
 <div id="log"></div></div>
 <script>
 let T=localStorage.t||"",cur=null,hist=[],mr=null,chunks=[],aud=null;
@@ -22,17 +23,20 @@ async function J(u,o){const r=await fetch(u,o);const j=await r.json().catch(()=>
 function show(){if(T){$("login").classList.add("hide");$("app").classList.remove("hide")}}show();
 async function req(){try{await J("/auth/request",{method:"POST"});alert("Code Telegram pe bheja")}catch(e){alert(e.message)}}
 async function ver(){const f=new FormData();f.append("code",$("code").value);try{T=(await J("/auth/verify",{method:"POST",body:f})).token;localStorage.t=T;show()}catch(e){alert(e.message)}}
+async function syn(){try{log("Sheet contacts: "+(await J("/contacts/sync",{method:"POST",headers:H()})).count)}catch(e){log(e.message)}}
+async function vs(){try{const v=await J("/variants",{headers:H()});for(const k in v)log(k+": "+v[k].name+" - "+(v[k].ready?"ready":"key missing"))}catch(e){log(e.message)}}
 async function up(){const f=new FormData();f.append("file",$("csv").files[0]);try{log("Contacts: "+(await J("/contacts",{method:"POST",body:f,headers:H()})).count)}catch(e){log(e.message)}}
 function play(b64){if(aud)aud.pause();aud=new Audio("data:audio/mpeg;base64,"+b64);aud.play()}
-async function say(t,l){const f=new FormData();f.append("text",t);f.append("lang",l||"hi-IN");play((await J("/speak",{method:"POST",body:f,headers:H()})).audio)}
+async function say(t,l){const f=new FormData();f.append("text",t);f.append("lang",l||"hi-IN");f.append("voice",$("voice").value);play((await J("/speak",{method:"POST",body:f,headers:H()})).audio)}
 async function nextCall(){try{const n=await J("/next",{headers:H()});if(!n.contact){log("Koi pending contact nahi");return}
-cur=n.contact;hist=[];log("Call: "+cur.name+" "+cur.phone);const t=cur.name+" ji, "+n.intro;hist.push({who:"agent",text:t});log("AI: "+t);await say(t);$("rec").classList.remove("hide");$("end").classList.remove("hide")}catch(e){log(e.message)}}
+cur=n.contact;hist=[];log("Call: "+cur.name+" "+cur.phone);const en=$("lang").value=="en-IN",rm=$("mode").value=="rem";if(rm&&!cur.registered){log("Skip: "+cur.name+" registered nahi hai (CSV me registered=yes chahiye)");return}let t;if(rm){t=(en?n.rem_en:n.rem).replace("{name}",cur.name)}else{t=en?("Hi "+cur.name+". "+n.intro_en):(cur.name+" ji, "+n.intro)}hist.push({who:"agent",text:t});log("AI: "+t);await say(t,$("lang").value);$("rec").classList.remove("hide");$("end").classList.remove("hide")}catch(e){log(e.message)}}
 async function toggle(){if(mr&&mr.state=="recording"){mr.stop();$("rec").textContent="⏳...";return}
 if(aud)aud.pause();const s=await navigator.mediaDevices.getUserMedia({audio:true});mr=new MediaRecorder(s);chunks=[];mr.ondataavailable=e=>chunks.push(e.data);
-mr.onstop=async()=>{s.getTracks().forEach(x=>x.stop());const f=new FormData();f.append("audio",new Blob(chunks,{type:mr.mimeType}),"a.webm");f.append("history",JSON.stringify(hist));
-try{const j=await J("/turn",{method:"POST",body:f,headers:H()});if(j.heard){hist.push({who:"person",text:j.heard});hist.push({who:"agent",text:j.reply});log("Tu: "+j.heard);log("AI: "+j.reply);play(j.audio)}else log("(kuch sunai nahi diya)")}catch(e){log(e.message)}$("rec").textContent="🎤 Bol (dabake bol, phir dubara dab)"};
+mr.onstop=async()=>{s.getTracks().forEach(x=>x.stop());const f=new FormData();f.append("audio",new Blob(chunks,{type:mr.mimeType}),"a.webm");f.append("history",JSON.stringify(hist));f.append("phone",cur.phone);f.append("variant",$("var").value);
+try{const j=await J("/turn",{method:"POST",body:f,headers:H()});if(j.heard){hist.push({who:"person",text:j.heard});hist.push({who:"agent",text:j.reply});log("Tu: "+j.heard);log("AI: "+j.reply);log("["+j.variant+"] stt "+j.secs.stt+"s, brain "+j.secs.brain+"s, total "+j.secs.total+"s");play(j.audio)}else log("(kuch sunai nahi diya)")}catch(e){log(e.message)}$("rec").textContent="🎤 Bol (dabake bol, phir dubara dab)"};
 mr.start();$("rec").textContent="⏺ sun raha hu... (dubara dab = bhej)"}
 async function endCall(){const f=new FormData();f.append("phone",cur.phone);f.append("name",cur.name);f.append("transcript",hist.map(h=>(h.who=="agent"?"AGENT: ":"PERSON: ")+h.text).join("\n"));
 try{const a=await J("/end",{method:"POST",body:f,headers:H()});log("Result: "+a.interest+" - "+a.summary+" (Telegram pe bheja)");$("rec").classList.add("hide");$("end").classList.add("hide")}catch(e){log(e.message)}}
+async function phone(){const f=new FormData();f.append("to","+919370727222");f.append("name","Sagar");f.append("mode",$("mode").value);f.append("lang",$("lang").value);f.append("variant",$("var").value);f.append("voice",$("voice").value);try{await J("/twilio/call",{method:"POST",body:f,headers:H()});log("Call laga raha hu... phone uthao")}catch(e){log(e.message)}}
 async function rep(){const f=new FormData();f.append("hours","4");try{log((await J("/report",{method:"POST",body:f,headers:H()})).report)}catch(e){log(e.message)}}
 </script></body></html>
