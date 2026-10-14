@@ -188,7 +188,7 @@ async def brain_race(contents, system):
     tasks = []
     if GEMINI: tasks.append(asyncio.create_task(_g_call(contents, system, True)))
     for name, url, envk, model in FALLBACKS:
-        if name == "groq" and os.environ.get(envk): tasks.append(asyncio.create_task(_f_call(name, url, os.environ[envk], model, contents, system, True)))
+        if name in ("groq", "nvidia", "openrouter") and os.environ.get(envk): tasks.append(asyncio.create_task(_f_call(name, url, os.environ[envk], model, contents, system, True)))
     pending = set(tasks); errs = []
     while pending:
         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
@@ -230,7 +230,17 @@ def pick_voice(voice, lang):
     if v == "ashutosh" and lang != "hi-IN": v = "ratan"
     return v if v in ("shubh", "ratan", "ashutosh", "priya", "ritu", "ishita") else "shubh"
 
+V4_SPK = os.environ.get("VOICE_V4", "ashutosh_hi_conversational")
 async def tts(text, lang, voice=""):
+    if V4_SPK and (voice or "").lower() in ("", "ashutosh", "v4"):
+        for lg in ([lang] if lang in ("hi-IN", "en-IN") else []) + ["hi-IN"]:
+            try:
+                async with httpx.AsyncClient(timeout=20) as c:
+                    r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
+                        json={"text": text[:2400], "language_code": lg, "model": "bulbul:v4-flash", "speaker": V4_SPK, "pace": 0.95, "temperature": 0.8, "output_audio_codec": "mp3"})
+                if r.status_code == 200: return r.json()["audios"][0]
+                print("v4 tts fail", lg, r.status_code, r.text[:120], flush=True)
+            except Exception as e: print("v4 tts exc", type(e).__name__, flush=True)
     lang = lang if lang in ("hi-IN","mr-IN","en-IN","kn-IN","ta-IN","te-IN","bn-IN","gu-IN","ml-IN","pa-IN","od-IN") else "hi-IN"
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
