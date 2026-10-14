@@ -89,7 +89,7 @@ async def contacts(file: UploadFile = File(...), x_token: str = Header(None)):
     out = []
     for r in rows:
         k = {a.strip().lower(): (b or "").strip() for a, b in r.items() if a}
-        if k.get("name") and k.get("phone"): out.append({"name": k["name"], "phone": k["phone"], "registered": k.get("registered", "").lower() in ("yes","y","true","1"), "status": "pending"})
+        if k.get("phone"): out.append({"name": (k.get("name") or "").strip(), "phone": k["phone"], "registered": k.get("registered", "").lower() in ("yes","y","true","1"), "status": "pending"})
     s = load(); s["contacts"] = out; save(s)
     return {"count": len(out)}
 
@@ -346,7 +346,7 @@ async def tw_check(request: Request, form):
     raise HTTPException(403, "bad signature")
 
 @app.post("/twilio/call")
-async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("enq"), lang: str = Form("hi-IN"), variant: str = Form("A"), voice: str = Form(""), src: str = Form(""), x_token: str = Header(None)):
+async def tw_call(to: str = Form(...), name: str = Form(""), mode: str = Form("enq"), lang: str = Form("hi-IN"), variant: str = Form("A"), voice: str = Form(""), src: str = Form(""), x_token: str = Header(None)):
     auth(x_token)
     if to not in ALLOWED: raise HTTPException(403, "number not allowed (test numbers only)")
     if not (TW_SID and TW_TOKEN and TW_FROM): raise HTTPException(400, "Twilio not configured")
@@ -544,12 +544,12 @@ async def sample(v: str, l: str = "hi-IN"):
 
 # ---- Retell demo call via Twilio -> SIP (own number only) ----
 @app.post("/retell/call")
-async def retell_call(to: str = Form(...), agent_id: str = Form(...), rkey: str = Form(...), secret: str = Form(...)):
+async def retell_call(to: str = Form(...), name: str = Form(""), agent_id: str = Form(...), rkey: str = Form(...), secret: str = Form(...)):
     if hashlib.sha256(secret.encode()).hexdigest() != "561f2bf55807e3751013fe672ca67277e5877b3fc752eae694b5366ab4d968c4": raise HTTPException(401, "no")
     if to not in ALLOWED: raise HTTPException(403, "number not allowed (test numbers only)")
     if not (TW_SID and TW_TOKEN and TW_FROM): raise HTTPException(400, "Twilio not configured")
     async with httpx.AsyncClient(timeout=30) as c:
-        rr = await c.post("https://api.retellai.com/v2/register-phone-call", headers={"Authorization": "Bearer " + rkey}, json={"agent_id": agent_id, "direction": "outbound", "from_number": TW_FROM, "to_number": to})
+        rr = await c.post("https://api.retellai.com/v2/register-phone-call", headers={"Authorization": "Bearer " + rkey}, json={"agent_id": agent_id, "direction": "outbound", "from_number": TW_FROM, "to_number": to, "retell_llm_dynamic_variables": {"greeting": ("Hi " + name.strip() + " ji!") if name.strip() else "Hi!", "lead_name": name.strip()}})
         print("RETELL REG", rr.status_code, rr.text[:200], flush=True)
         if rr.status_code >= 300: raise HTTPException(502, "retell: " + rr.text[:200])
         cid = rr.json()["call_id"]
