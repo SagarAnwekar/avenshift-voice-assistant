@@ -360,8 +360,15 @@ async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("
     except Exception as e: print("intro pregen failed", e, flush=True)
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN),
-            data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/twilio/voice?cid={cid}", "StatusCallback": f"{PUBLIC}/twilio/status?cid={cid}", "StatusCallbackEvent": "completed", "Record": "true", "RecordingChannels": "dual", "RecordingStatusCallback": f"{PUBLIC}/twilio/rec?cid={cid}", "RecordingStatusCallbackEvent": "completed"})
-    if r.status_code >= 300: raise HTTPException(502, "twilio: " + r.text[:200])
+            data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/twilio/voice?cid={cid}", "StatusCallback": f"{PUBLIC}/twilio/status?cid={cid}", "StatusCallbackEvent": "completed"})
+    if r.status_code >= 300:
+        print("TWILIO CALL ERR", r.status_code, r.text[:300], flush=True); raise HTTPException(502, "twilio: " + r.text[:200])
+    try:
+        csid = r.json().get("sid")
+        async with httpx.AsyncClient(timeout=15) as c2:
+            rr = await c2.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls/{csid}/Recordings.json", auth=(TW_SID, TW_TOKEN), data={"RecordingChannels": "dual", "RecordingStatusCallback": f"{PUBLIC}/twilio/rec?cid={cid}"})
+        print("REC START", rr.status_code, rr.text[:150], flush=True)
+    except Exception as e: print("rec start exc", e, flush=True)
     return {"ok": True, "cid": cid}
 
 @app.get("/audio/{aid}.mp3")
