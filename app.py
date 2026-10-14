@@ -379,9 +379,12 @@ async def tw_turn(request: Request, cid: str):
         gl, url = await compute_reply(c); return twiml(gather(cid, gl, url))
     c["empty"] = 0
     c["turns"] += 1; c["hist"].append({"who": "person", "text": said})
+    try:
+        if c.get("task") and not c["task"].done(): c["task"].cancel()
+    except Exception: pass
     c["task"] = asyncio.create_task(compute_reply(c))   # brain + voice run while the filler plays
     f = pick_filler(c.get("voice", ""))
-    if f: return twiml(f"<Play>{f}</Play><Redirect method=\"POST\">{PUBLIC}/twilio/reply?cid={cid}</Redirect>")
+    if f: return twiml(f'<Gather input="speech" bargeIn="true" language="{"en-IN" if c["lang"] == "en-IN" else "hi-IN"}" speechTimeout="1" speechModel="phone_call" enhanced="true" timeout="1" action="{PUBLIC}/twilio/turn?cid={cid}"><Play>{f}</Play></Gather><Redirect method="POST">{PUBLIC}/twilio/reply?cid={cid}</Redirect>')
     gl, url = await c["task"]; return twiml(gather(cid, gl, url))
 
 @app.post("/twilio/reply")
@@ -390,7 +393,7 @@ async def tw_reply(request: Request, cid: str):
     c = CALLS.get(cid)
     if not c or not c.get("task"): return twiml("<Hangup/>")
     try: gl, url = await c["task"]
-    except Exception: return twiml("<Say>Sorry, network issue. We will call you back. Goodbye.</Say><Hangup/>")
+    except (Exception, asyncio.CancelledError): return twiml("<Say>Sorry, network issue. We will call you back. Goodbye.</Say><Hangup/>")
     return twiml(gather(cid, gl, url))
 
 @app.post("/twilio/status")
