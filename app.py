@@ -114,7 +114,7 @@ SYS = ("You are a polite, human-sounding phone assistant for " + FACTS["company"
        "(Hindi/Marathi/English, Roman or native script both fine). Use ONLY these approved facts: " + json.dumps(FACTS["approved_facts"], ensure_ascii=False) +
        ". " + FACTS["rule"] + " Understand what the person needs, answer clearly, and when they want webinar/course details say you will send the join link. "
        "If the answer is not in the approved facts, say you do not know and that the team will call back or share details; never guess. If the person interrupts or changes topic, drop what you were saying and answer their latest words first. "
-       "STYLE (phone call, mobile audio): before ending the call always ask once if they need any other help (Hindi: aur kuch madad chahiye?). speak like a warm, relaxed person, not a script. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
+       "STYLE (phone call, mobile audio): you are the AI voice assistant of Sagar. In a demo call you may speak as Sagar, but if anyone asks whether you are a real person or AI, answer honestly that you are an AI voice assistant. Never claim to be human. Speak natural Indian-accent Hinglish (Hindi with simple English words); if the person speaks English, Kannada or Marathi, switch to that language and stay in it. Before ending the call always ask once if they need any other help (Hindi: aur kuch madad chahiye?). speak like a warm, relaxed person, not a script. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
        "Each turn: acknowledge what they said in a few words, give the useful answer, then move forward with one small question. "
        "Natural Indian conversational style: acknowledgements like Achha, Haan ji, Theek hai, Bilkul, Samajh gaya, used sparingly and varied, in the caller's language (Marathi: Ho, Barobar; Kannada: Sari, Houdu), not a generic English-assistant tone. "
        "A short filler like Achha or Haan ji is already played before your reply, so do not start your reply with the same word; go straight to the answer. "
@@ -279,6 +279,18 @@ PUBLIC = os.environ.get("PUBLIC_URL", "https://avenshift-voice-assistant.onrende
 ALLOWED = [x.strip() for x in os.environ.get("ALLOWED_CALL_NUMBERS", "+919370727222").split(",") if x.strip()]
 AUDIO, CALLS = {}, {}
 
+def intro_for(name, mode, lang, phone):
+    en = lang == "en-IN"
+    demo = phone in ALLOWED and not os.environ.get("LEAD_MODE_ALWAYS")   # demo_mode: own number; lead_mode: anyone else
+    if mode == "rem": t = (FACTS["caller_intro_reminder_en"] if en else FACTS["caller_intro_reminder"]).replace("{name}", name)
+    else: t = ("Hi " + name + ". " + FACTS["caller_intro_en"].replace("Hello, ", "", 1).capitalize()) if en else (name + " ji, " + FACTS["caller_intro"].replace("Namaste, ", "", 1))
+    if demo:
+        t = t.replace("Sagar ka AI assistant bol raha hoon", "Sagar bol raha hoon").replace("I'm Sagar's AI assistant", "this is Sagar")
+    else:
+        t = t.replace("Sagar ka AI assistant bol raha hoon", "Sagar ki AI voice team se bol raha hoon").replace("I'm Sagar's AI assistant", "I'm from Sagar's AI voice team")
+        t += " This call may be recorded." if en else " Call record ho sakti hai."
+    return t
+
 def twiml(body): return Response('<?xml version="1.0" encoding="UTF-8"?><Response>' + body + "</Response>", media_type="application/xml")
 
 async def tw_check(request: Request, form):
@@ -302,7 +314,7 @@ async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("
     await prep_fillers(voice)
     try:
         en0 = lang == "en-IN"; c0 = CALLS[cid]
-        t0 = (FACTS["caller_intro_reminder_en"] if en0 else FACTS["caller_intro_reminder"]).replace("{name}", name) if mode == "rem" else (("Hi " + name + ". " + FACTS["caller_intro_en"]) if en0 else (name + " ji, " + FACTS["caller_intro"]))
+        t0 = intro_for(name, mode, lang, to)
         c0["intro_text"] = t0; c0["intro_url"] = await say_play(t0, lang, voice)
     except Exception as e: print("intro pregen failed", e, flush=True)
     async with httpx.AsyncClient(timeout=30) as c:
@@ -331,8 +343,7 @@ async def tw_voice(request: Request, cid: str):
     c = CALLS.get(cid)
     if not c: return twiml("<Hangup/>")
     en = c["lang"] == "en-IN"
-    if c["mode"] == "rem": t = (FACTS["caller_intro_reminder_en"] if en else FACTS["caller_intro_reminder"]).replace("{name}", c["name"])
-    else: t = ("Hi " + c["name"] + ". " + FACTS["caller_intro_en"]) if en else (c["name"] + " ji, " + FACTS["caller_intro"])
+    t = intro_for(c["name"], c["mode"], c["lang"], c["phone"])
     c["hist"].append({"who": "agent", "text": t})
     url = c.get("intro_url") if c.get("intro_text") == t and c.get("intro_url") else await say_play(t, c["lang"], c.get("voice",""))
     return twiml(gather(cid, "en-IN" if en else "hi-IN", url))
