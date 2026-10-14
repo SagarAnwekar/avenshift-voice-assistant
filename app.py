@@ -114,7 +114,7 @@ SYS = ("You are a polite, human-sounding phone assistant for " + FACTS["company"
        "(Hindi/Marathi/English, Roman or native script both fine). Use ONLY these approved facts: " + json.dumps(FACTS["approved_facts"], ensure_ascii=False) +
        ". " + FACTS["rule"] + " Understand what the person needs, answer clearly, and when they want webinar/course details say you will send the join link. "
        "If the answer is not in the approved facts, say you do not know and that the team will call back or share details; never guess. If the person interrupts or changes topic, drop what you were saying and answer their latest words first. "
-       "STYLE (phone call, mobile audio): you are the AI voice assistant of Sagar. In a demo call you may speak as Sagar, but if anyone asks whether you are a real person or AI, answer honestly that you are an AI voice assistant. Never claim to be human. Speak natural Indian-accent Hinglish (Hindi with simple English words); if the person speaks English, Kannada or Marathi, switch to that language and stay in it. Before ending the call always ask once if they need any other help (Hindi: aur kuch madad chahiye?). speak like a warm, relaxed person, not a script. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
+       "STYLE (phone call, mobile audio): you are the AI voice assistant of Sagar. In a demo call you may speak as Sagar, but if anyone asks whether you are a real person or AI, answer honestly that you are an AI voice assistant. Never claim to be human. Speak natural Indian-accent Hinglish (Hindi with simple English words); if the person speaks English, Kannada or Marathi, switch to that language and stay in it. Before ending the call always ask once if they need any other help (Hindi: aur kuch madad chahiye?). SALES-CALL MANNER like a polished real-estate agent: speak very properly, confident, warm and courteous (use 'aap', 'ji', 'please'). Flow: 1) clear opening already given, 2) state the purpose in one line (free AI developer program by NextLearn), 3) ask short questions, then LISTEN, 4) handle objections politely: acknowledge first ('bilkul samajh sakta hoon'), then one approved fact, never push twice, 5) give a clear next step (session join / share details on email or chat), 6) courteous close ('aapka samay dene ke liye dhanyavaad'). No slang, no filler like 'umm'. Approved facts only, no promises of jobs, salary or guarantees. Max 1-2 short sentences (under ~25 words), ONE idea or ONE question per turn. "
        "Each turn: acknowledge what they said in a few words, give the useful answer, then move forward with one small question. "
        "Natural Indian conversational style: acknowledgements like Achha, Haan ji, Theek hai, Bilkul, Samajh gaya, used sparingly and varied, in the caller's language (Marathi: Ho, Barobar; Kannada: Sari, Houdu), not a generic English-assistant tone. "
        "A short filler like Achha or Haan ji is already played before your reply, so do not start your reply with the same word; go straight to the answer. "
@@ -305,12 +305,12 @@ async def tw_check(request: Request, form):
     raise HTTPException(403, "bad signature")
 
 @app.post("/twilio/call")
-async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("enq"), lang: str = Form("hi-IN"), variant: str = Form("A"), voice: str = Form(""), x_token: str = Header(None)):
+async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("enq"), lang: str = Form("hi-IN"), variant: str = Form("A"), voice: str = Form(""), src: str = Form(""), x_token: str = Header(None)):
     auth(x_token)
     if to not in ALLOWED: raise HTTPException(403, "number not allowed (test numbers only)")
     if not (TW_SID and TW_TOKEN and TW_FROM): raise HTTPException(400, "Twilio not configured")
     cid = uuid.uuid4().hex[:10]
-    CALLS[cid] = {"name": name, "phone": to, "hist": [], "lang": lang, "mode": mode, "turns": 0, "variant": variant, "voice": voice}
+    CALLS[cid] = {"name": name, "phone": to, "hist": [], "lang": lang, "mode": mode, "turns": 0, "variant": variant, "voice": voice, "src": src}
     await prep_fillers(voice)
     try:
         en0 = lang == "en-IN"; c0 = CALLS[cid]
@@ -418,14 +418,35 @@ async def tw_status(request: Request, cid: str):
         except Exception: a = {"interest": "unclear", "summary": raw[:200]}
         s = load(); s["calls"].append({"name": c["name"], "phone": c["phone"], "t": time.time(), "transcript": tr, "via": "twilio", **a})
         s.setdefault("notes", {})[c["phone"]] = {"last_summary": a.get("summary"), "language": a.get("language"), "email": a.get("email"), "interest": a.get("interest")}; save(s)
-        await sheet({"action": "call", "name": c["name"], "phone": c["phone"], "email_draft": build_email(c["name"], c["phone"], a, tr), **{k: a.get(k, "") for k in ("interest","summary","needs","questions","language","email","callback_time","whatsapp_message")}})
-        await tg_send("PHONE TEST CALL done: " + c["name"] + "\nResult: " + str(a.get("interest")) + "\n" + str(a.get("summary")) + "\n\n" + build_email(c["name"], c["phone"], a, tr))
+        if c.get("src") != "n8n":  # n8n workflow does its own Sheet log + Telegram summary
+            await sheet({"action": "call", "name": c["name"], "phone": c["phone"], "email_draft": build_email(c["name"], c["phone"], a, tr), **{k: a.get(k, "") for k in ("interest","summary","needs","questions","language","email","callback_time","whatsapp_message")}})
+            await tg_send("PHONE TEST CALL done: " + c["name"] + "\nResult: " + str(a.get("interest")) + "\n" + str(a.get("summary")) + "\n\n" + build_email(c["name"], c["phone"], a, tr))
     return Response("ok")
 
 @app.get("/calls")
 def calls(since: float = 0, x_token: str = Header(None)):
     auth(x_token)
-    return {"calls": [{k: c.get(k) for k in ("name","phone","t","interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft")} for c in load()["calls"] if c["t"] > since]}
+    return {"calls": [{k: c.get(k) for k in ("name","phone","t","transcript","interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft")} for c in load()["calls"] if c["t"] > since]}
 
 @app.get("/")
 def home(): return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+
+
+# ---- n8n helper endpoints (all need x-token) ----
+@app.get("/n8n/contacts")
+async def n8n_contacts(x_token: str = Header(None)):
+    auth(x_token)
+    r = await sheet({"action": "contacts"})
+    if not r or not r.get("ok"): raise HTTPException(502, "sheet not connected")
+    return r
+@app.get("/n8n/facts")
+def n8n_facts(x_token: str = Header(None)):
+    auth(x_token); return {"approved_facts": FACTS["approved_facts"]}
+@app.post("/n8n/log")
+async def n8n_log(request: Request, x_token: str = Header(None)):
+    auth(x_token); d = await request.json()
+    r = await sheet({"action": "call", **{k: d.get(k, "") for k in ("name","phone","interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft")}})
+    return {"ok": bool(r and r.get("ok", True))}
+@app.post("/n8n/notify")
+async def n8n_notify(request: Request, x_token: str = Header(None)):
+    auth(x_token); d = await request.json(); await tg_send(str(d.get("text", ""))); return {"ok": True}
