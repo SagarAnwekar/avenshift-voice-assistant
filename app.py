@@ -334,7 +334,7 @@ async def say_play(text, lang, voice=""):
 
 def gather(cid, lang, play=""):
     inner = f"<Play>{play}</Play>" if play else ""
-    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="1" speechModel="phone_call" enhanced="true" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
+    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" hints="yes,haan,ha,haan ji,ji,theek hai,nahi,no,okay,sure" speechModel="phone_call" enhanced="true" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
 
 @app.post("/twilio/voice")
 async def tw_voice(request: Request, cid: str):
@@ -385,7 +385,7 @@ async def tw_turn(request: Request, cid: str):
         c["empty"] = c.get("empty", 0) + 1
         if c["empty"] >= 4: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
         c["turns"] += 1
-        c["hist"].append({"who": "person", "text": "(silence - the person has not spoken yet. Keep talking: give the next short point of the program using approved facts only, say TBD for anything unknown, then ask one simple question. Do not mention silence.)"})
+        c["hist"].append({"who": "person", "sys": True, "text": "(silence - the person has not spoken. Do NOT pitch more. In ONE short sentence, politely check if they can hear you or if now is a bad time, and offer to call back. Never mention this note.)" if c["empty"] < 3 else "(silence again - say a very short polite goodbye and that you will message details later. Never mention this note.)"})
         gl, url = await compute_reply(c); return twiml(gather(cid, gl, url))
     c["empty"] = 0
     c["turns"] += 1; c["hist"].append({"who": "person", "text": said})
@@ -411,7 +411,7 @@ async def tw_status(request: Request, cid: str):
     form = dict(await request.form()); await tw_check(request, form)
     c = CALLS.pop(cid, None)
     if c and c["hist"]:
-        tr = "\n".join(("AGENT: " if h["who"] == "agent" else "PERSON: ") + h["text"] for h in c["hist"])
+        tr = "\n".join(("AGENT: " if h["who"] == "agent" else "PERSON: ") + ("(silence)" if h.get("sys") else h["text"]) for h in c["hist"])
         raw = await gemini([{"role": "user", "parts": [{"text": tr}]}], system=ANALYSE + " Approved facts: " + json.dumps(FACTS["approved_facts"]), json_out=True)
         try: a = json.loads(raw)
         except Exception: a = {"interest": "unclear", "summary": raw[:200]}
