@@ -314,7 +314,7 @@ async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("
     try:
         en0 = lang == "en-IN"; c0 = CALLS[cid]
         t0 = intro_for(name, mode, lang, to)
-        c0["intro_text"] = t0; c0["intro_url"] = await say_play(t0, lang, voice)
+        c0["intro_text"] = t0; c0["intro_url"] = await say_play(t0, "en-IN" if mode != "rem" else lang, voice)
     except Exception as e: print("intro pregen failed", e, flush=True)
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN),
@@ -344,7 +344,7 @@ async def tw_voice(request: Request, cid: str):
     en = c["lang"] == "en-IN"
     t = intro_for(c["name"], c["mode"], c["lang"], c["phone"])
     c["hist"].append({"who": "agent", "text": t})
-    url = c.get("intro_url") if c.get("intro_text") == t and c.get("intro_url") else await say_play(t, c["lang"], c.get("voice",""))
+    url = c.get("intro_url") if c.get("intro_text") == t and c.get("intro_url") else await say_play(t, "en-IN" if c["mode"] != "rem" else c["lang"], c.get("voice",""))
     return twiml(gather(cid, "en-IN" if en else "hi-IN", url))
 
 FILLERS = ["Achha...", "Haan ji...", "Theek hai...", "Bilkul..."]
