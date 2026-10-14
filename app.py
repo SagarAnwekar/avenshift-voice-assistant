@@ -449,3 +449,18 @@ async def n8n_log(request: Request, x_token: str = Header(None)):
 @app.post("/n8n/notify")
 async def n8n_notify(request: Request, x_token: str = Header(None)):
     auth(x_token); d = await request.json(); await tg_send(str(d.get("text", ""))); return {"ok": True}
+
+# ---- temporary voice comparison (fixed texts, whitelisted voices only) ----
+SAMPLE_OK = {"v3:shubh","v3:ratan","v3:ashutosh","v4:shubh_enhi_companion","v4:shubh_enhi_ads","v4:sunny_enhi_customer","v4:amit_hi_conversational","v4:ashutosh_hi_conversational","v4:kabir_hi_conversational","v4:aayan_hi_conversational","v4:manan_hi_conversational","v4:chetan_kn_conversation","v4:nilesh_mr_conversation"}
+SAMPLE_TXT = {"hi-IN": "Hi, main Sagar bol raha hoon, NextLearn se. Kya abhi aap ek minute baat kar sakte hain? Hum ek free AI developer program chala rahe hain, jisme certificate bhi milta hai.",
+              "kn-IN": "ನಮಸ್ಕಾರ, ನಾನು NextLearn ನಿಂದ ಸಾಗರ್ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ. ಈಗ ಒಂದು ನಿಮಿಷ ಮಾತನಾಡಬಹುದಾ? ನಾವು ಉಚಿತ AI ಡೆವಲಪರ್ ಕಾರ್ಯಕ್ರಮ ನಡೆಸುತ್ತಿದ್ದೇವೆ.",
+              "mr-IN": "नमस्कार, मी NextLearn कडून सागर बोलतोय. तुमच्याकडे एक मिनिट वेळ आहे का? आम्ही एक मोफत AI डेव्हलपर कार्यक्रम चालवत आहोत."}
+@app.get("/sample")
+async def sample(v: str, l: str = "hi-IN"):
+    if v not in SAMPLE_OK or l not in SAMPLE_TXT: raise HTTPException(400, "no")
+    mdl, spk = v.split(":"); t0 = time.time()
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
+            json={"text": SAMPLE_TXT[l], "language_code": l, "model": "bulbul:v3" if mdl == "v3" else "bulbul:v4-flash", "speaker": spk, "pace": 1.0, "temperature": 0.6, "output_audio_codec": "mp3"})
+    if r.status_code != 200: raise HTTPException(502, f"{r.status_code}: {r.text[:300]}")
+    return Response(base64.b64decode(r.json()["audios"][0]), media_type="audio/mpeg", headers={"x-secs": f"{time.time()-t0:.2f}"})
