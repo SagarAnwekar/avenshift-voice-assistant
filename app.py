@@ -300,6 +300,11 @@ async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("
     cid = uuid.uuid4().hex[:10]
     CALLS[cid] = {"name": name, "phone": to, "hist": [], "lang": lang, "mode": mode, "turns": 0, "variant": variant, "voice": voice}
     await prep_fillers(voice)
+    try:
+        en0 = lang == "en-IN"; c0 = CALLS[cid]
+        t0 = (FACTS["caller_intro_reminder_en"] if en0 else FACTS["caller_intro_reminder"]).replace("{name}", name) if mode == "rem" else (("Hi " + name + ". " + FACTS["caller_intro_en"]) if en0 else (name + " ji, " + FACTS["caller_intro"]))
+        c0["intro_text"] = t0; c0["intro_url"] = await say_play(t0, lang, voice)
+    except Exception as e: print("intro pregen failed", e, flush=True)
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN),
             data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/twilio/voice?cid={cid}", "StatusCallback": f"{PUBLIC}/twilio/status?cid={cid}", "StatusCallbackEvent": "completed"})
@@ -318,7 +323,7 @@ async def say_play(text, lang, voice=""):
 
 def gather(cid, lang, play=""):
     inner = f"<Play>{play}</Play>" if play else ""
-    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" speechModel="phone_call" enhanced="true" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
+    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="1" speechModel="phone_call" enhanced="true" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
 
 @app.post("/twilio/voice")
 async def tw_voice(request: Request, cid: str):
@@ -329,7 +334,8 @@ async def tw_voice(request: Request, cid: str):
     if c["mode"] == "rem": t = (FACTS["caller_intro_reminder_en"] if en else FACTS["caller_intro_reminder"]).replace("{name}", c["name"])
     else: t = ("Hi " + c["name"] + ". " + FACTS["caller_intro_en"]) if en else (c["name"] + " ji, " + FACTS["caller_intro"])
     c["hist"].append({"who": "agent", "text": t})
-    return twiml(gather(cid, "en-IN" if en else "hi-IN", await say_play(t, c["lang"], c.get("voice",""))))
+    url = c.get("intro_url") if c.get("intro_text") == t and c.get("intro_url") else await say_play(t, c["lang"], c.get("voice",""))
+    return twiml(gather(cid, "en-IN" if en else "hi-IN", url))
 
 FILLERS = ["Achha...", "Haan ji...", "Theek hai...", "Bilkul..."]
 FILLER_AUDIO = {}  # (voice, i) -> aid
@@ -350,7 +356,9 @@ async def compute_reply(c):
     memo = notes_for(c["phone"])
     sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
     contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in c["hist"][-24:]]
+    _t = time.time()
     raw = await gemini(contents, system=sysm, json_out=True, brain=VARIANTS.get(c.get("variant","A"), VARIANTS["A"])[2])
+    print("brain_secs", round(time.time() - _t, 2), flush=True)
     try: j = json.loads(raw); reply, lang = clean_reply(str(j["reply"])), j.get("lang") or "hi-IN"
     except Exception: reply, lang = clean_reply(raw), "hi-IN"
     c["hist"].append({"who": "agent", "text": reply})
