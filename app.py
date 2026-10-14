@@ -540,3 +540,21 @@ async def sample(v: str, l: str = "hi-IN"):
             json={"text": SAMPLE_TXT[l], "language_code": l, "model": "bulbul:v3" if mdl == "v3" else "bulbul:v4-flash", "speaker": spk, "pace": 1.0, "temperature": 0.6, "output_audio_codec": "mp3"})
     if r.status_code != 200: raise HTTPException(502, f"{r.status_code}: {r.text[:300]}")
     return Response(base64.b64decode(r.json()["audios"][0]), media_type="audio/mpeg", headers={"x-secs": f"{time.time()-t0:.2f}"})
+
+
+# ---- Retell demo call via Twilio -> SIP (own number only) ----
+@app.post("/retell/call")
+async def retell_call(to: str = Form(...), agent_id: str = Form(...), rkey: str = Form(...), secret: str = Form(...)):
+    if hashlib.sha256(secret.encode()).hexdigest() != "561f2bf55807e3751013fe672ca67277e5877b3fc752eae694b5366ab4d968c4": raise HTTPException(401, "no")
+    if to not in ALLOWED: raise HTTPException(403, "number not allowed (test numbers only)")
+    if not (TW_SID and TW_TOKEN and TW_FROM): raise HTTPException(400, "Twilio not configured")
+    async with httpx.AsyncClient(timeout=30) as c:
+        rr = await c.post("https://api.retellai.com/v2/register-phone-call", headers={"Authorization": "Bearer " + rkey}, json={"agent_id": agent_id, "direction": "outbound", "from_number": TW_FROM, "to_number": to})
+        print("RETELL REG", rr.status_code, rr.text[:200], flush=True)
+        if rr.status_code >= 300: raise HTTPException(502, "retell: " + rr.text[:200])
+        cid = rr.json()["call_id"]
+        tw = '<Response><Dial answerOnBridge="true"><Sip>sip:' + cid + '@sip.retellai.com</Sip></Dial></Response>'
+        r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN), data={"To": to, "From": TW_FROM, "Twiml": tw})
+    print("RETELL TWILIO", r.status_code, r.text[:200], flush=True)
+    if r.status_code >= 300: raise HTTPException(502, "twilio: " + r.text[:200])
+    return {"ok": True, "retell_call_id": cid, "twilio_sid": r.json().get("sid")}
