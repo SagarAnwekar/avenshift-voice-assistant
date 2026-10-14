@@ -368,18 +368,23 @@ async def compute_reply(c):
     contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in c["hist"][-24:]]
     _t = time.time()
     raw = await gemini(contents, system=sysm, json_out=True, brain=VARIANTS.get(c.get("variant","A"), VARIANTS["A"])[2])
-    print("brain_secs", round(time.time() - _t, 2), flush=True)
+    _bs = round(time.time() - _t, 2)
+    print("brain_secs", _bs, flush=True)
     try: j = json.loads(raw); reply, lang = clean_reply(str(j["reply"])), j.get("lang") or "hi-IN"
     except Exception: reply, lang = clean_reply(raw), "hi-IN"
     c["hist"].append({"who": "agent", "text": reply})
     gl = {"hi-IN": "hi-IN", "en-IN": "en-IN", "mr-IN": "mr-IN", "kn-IN": "kn-IN"}.get(lang, "hi-IN")
-    return gl, await say_play(reply, lang, c.get("voice", ""))
+    _t2 = time.time(); _r = await say_play(reply, lang, c.get("voice", ""))
+    c.setdefault("lat", []).append({"turn": c.get("turns"), "brain": _bs, "tts": round(time.time() - _t2, 2), "compute_total": round(time.time() - _t, 2), "reply_lang": gl, "chars": len(reply)})
+    return gl, _r
 
 @app.post("/twilio/turn")
 async def tw_turn(request: Request, cid: str):
+    _w0 = time.time()
     form = dict(await request.form()); await tw_check(request, form)
     c = CALLS.get(cid)
     said = (form.get("SpeechResult") or "").strip()
+    if c is not None: c.setdefault("webhook", []).append({"turn": c.get("turns", 0) + 1, "said": said[:60], "t": round(_w0, 2)})
     if not c or c["turns"] >= 8: return twiml("<Say>Thank you. Goodbye.</Say><Hangup/>")
     if not said:
         c["empty"] = c.get("empty", 0) + 1
@@ -410,6 +415,7 @@ async def tw_reply(request: Request, cid: str):
 async def tw_status(request: Request, cid: str):
     form = dict(await request.form()); await tw_check(request, form)
     c = CALLS.pop(cid, None)
+    if c: print("TURNLAT", json.dumps({"cid": cid, "lat": c.get("lat"), "webhook": c.get("webhook")}, ensure_ascii=False), flush=True)
     if c and c["hist"]:
         tr = "\n".join(("AGENT: " if h["who"] == "agent" else "PERSON: ") + ("(silence)" if h.get("sys") else h["text"]) for h in c["hist"])
         raw = await gemini([{"role": "user", "parts": [{"text": tr}]}], system=ANALYSE + " Approved facts: " + json.dumps(FACTS["approved_facts"]), json_out=True)
