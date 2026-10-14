@@ -122,8 +122,7 @@ SYS = ("You are a polite, human-sounding phone assistant for " + FACTS["company"
        "If you did not catch something, politely ask them to repeat; after 3 failed tries offer a callback and end kindly. If they say not interested, thank them and stop, no pressure. "
        "Never say 'let me check' or 'one moment'. Do not claim to be human if asked.")
 
-DEMO_NOTE = (" DEMO TEST CALL: for this call only, the placeholder webinar is " + FACTS["demo_only"]["session_date_time"] + "; the join link is TBD (will be shared in chat). "
-              "Say clearly that this date is a demo/placeholder and not final.")
+DEMO_NOTE = (" DEMO TEST CALL to the owner's own number: the webinar facts above are real and confirmed by the owner (free webinar, certificate after joining, Sunday 18 October, 7 to 8 PM IST). The join link is not ready: say you will send it on WhatsApp.")
 import re
 def clean_reply(t):
     t = re.sub(r"[*_`#>\[\]]+", "", t); t = re.sub(r"\s+", " ", t).strip()
