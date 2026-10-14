@@ -275,7 +275,7 @@ async def speak(text: str = Form(...), lang: str = Form("hi-IN"), voice: str = F
 
 ANALYSE = ('Read this call transcript. Return JSON: {"interest":"interested|callback|not_interested|unclear","summary":"2 lines",'
            '"needs":"what they asked","email":"email if they gave one else empty","language":"language used","questions":"their questions",'
-           '"callback_time":"if said else empty","whatsapp_message":"short message with webinar details using ONLY approved facts and placeholder [JOIN LINK]"}')
+           '"callback_time":"if said else empty","consent_whatsapp":"yes ONLY if the person clearly agreed to receive webinar details on WhatsApp, else no","whatsapp_message":"short message with webinar details using ONLY approved facts and placeholder [JOIN LINK]"}')
 
 def build_email(name, phone, a, transcript):
     # PLACEHOLDER format. Replace with Sagar's sample format once he sends 4-5 emails.
@@ -294,10 +294,10 @@ async def end(phone: str = Form(...), name: str = Form(...), transcript: str = F
     s["calls"].append({"name": name, "phone": phone, "t": time.time(), "transcript": transcript, **a}); save(s)
     s.setdefault("notes", {})[phone] = {"last_summary": a.get("summary"), "language": a.get("language"), "email": a.get("email"), "interest": a.get("interest"), "callback_time": a.get("callback_time"), "questions": a.get("questions")}; save(s)
     a["email_draft"] = build_email(name, phone, a, transcript)
-    await sheet({"action": "call", "name": name, "phone": phone, **{k: a.get(k, "") for k in ("interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft")}})
+    await sheet({"action": "call", "name": name, "phone": phone, **{k: a.get(k, "") for k in ("interest","summary","needs","questions","language","email","callback_time","whatsapp_message","email_draft","consent_whatsapp")}})
     s["calls"][-1]["email_draft"] = a["email_draft"]; save(s)
     await tg_send(f"EMAIL DRAFT (format pending Sagar's samples, not sent):\n{a['email_draft']}")
-    await tg_send(f"Call done: {name} ({phone})\nResult: {a.get('interest')}\n{a.get('summary')}\nNeeds: {a.get('needs','')}\nCallback: {a.get('callback_time','')}\n\nWhatsApp draft (NOT sent):\n{a.get('whatsapp_message','')}")
+    await tg_send(f"Call done: {name} ({phone})\nResult: {a.get('interest')}\n{a.get('summary')}\nNeeds: {a.get('needs','')}\nCallback: {a.get('callback_time','')}\nWhatsApp consent: {a.get('consent_whatsapp','no')}\n\nWhatsApp draft (NOT sent):\n{a.get('whatsapp_message','')}")
     return a
 
 @app.post("/report")
