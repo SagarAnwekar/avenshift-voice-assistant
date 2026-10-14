@@ -470,3 +470,37 @@ async def sample(v: str, l: str = "hi-IN"):
             json={"text": SAMPLE_TXT[l], "language_code": l, "model": "bulbul:v3" if mdl == "v3" else "bulbul:v4-flash", "speaker": spk, "pace": 1.0, "temperature": 0.6, "output_audio_codec": "mp3"})
     if r.status_code != 200: raise HTTPException(502, f"{r.status_code}: {r.text[:300]}")
     return Response(base64.b64decode(r.json()["audios"][0]), media_type="audio/mpeg", headers={"x-secs": f"{time.time()-t0:.2f}"})
+
+STT_TESTS = [("hi-IN", "नमस्ते, मैं नेक्स्टलर्न से सागर बोल रहा हूँ। क्या आपके पास एक मिनट है?"),
+             ("hi-IN", "हम एक फ्री एआई डेवलपर प्रोग्राम चला रहे हैं, जिसमें आपको सर्टिफिकेट भी मिलता है।"),
+             ("hi-IN", "ठीक है, मैं आपको व्हाट्सएप पर पूरी डिटेल्स भेज देता हूँ, आप अपने समय पर देख लीजिए।"),
+             ("hi-IN", "आज शाम छह बजे वेबिनार है, क्या मैं आपका रजिस्ट्रेशन कन्फर्म कर दूँ?")]
+def _wer(ref, hyp):
+    import re
+    n = lambda s: re.sub(r"[^\w\s]", " ", s.lower()).split()
+    r, h = n(ref), n(hyp)
+    d = list(range(len(h) + 1))
+    for i in range(1, len(r) + 1):
+        p, d[0] = d[0], i
+        for j in range(1, len(h) + 1):
+            t = d[j]; d[j] = min(d[j] + 1, d[j - 1] + 1, p + (r[i - 1] != h[j - 1])); p = t
+    return round(d[len(h)] / max(1, len(r)), 3)
+@app.get("/stttest")
+async def stttest():
+    out = []
+    async with httpx.AsyncClient(timeout=60) as c:
+        for lang, text in STT_TESTS:
+            t0 = time.time()
+            r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
+                json={"text": text, "language_code": lang, "model": "bulbul:v3", "speaker": "shubh", "output_audio_codec": "mp3"})
+            if r.status_code != 200: out.append({"err": f"tts {r.status_code}"}); continue
+            audio = base64.b64decode(r.json()["audios"][0]); tt = round(time.time() - t0, 2)
+            row = {"ref": text, "tts_s": tt}
+            for eng in ("deepgram", "sarvam"):
+                t1 = time.time()
+                try:
+                    tr, lg = await stt(audio, "t.mp3", eng)
+                    row[eng] = {"text": tr, "wer": _wer(text, tr), "secs": round(time.time() - t1, 2)}
+                except Exception as e: row[eng] = {"err": str(e)[:120]}
+            out.append(row)
+    return JSONResponse(out)
