@@ -512,3 +512,15 @@ async def sample(v: str, l: str = "hi-IN"):
             json={"text": SAMPLE_TXT[l], "language_code": l, "model": "bulbul:v3" if mdl == "v3" else "bulbul:v4-flash", "speaker": spk, "pace": 1.0, "temperature": 0.6, "output_audio_codec": "mp3"})
     if r.status_code != 200: raise HTTPException(502, f"{r.status_code}: {r.text[:300]}")
     return Response(base64.b64decode(r.json()["audios"][0]), media_type="audio/mpeg", headers={"x-secs": f"{time.time()-t0:.2f}"})
+
+NAT_TXT = {"A": "Achha... haan ji, samajh gaya. Dekhiye, main bas ek minute lunga. Hum ek free AI developer program chala rahe hain, aur usme certificate bhi milta hai.",
+           "B": "Haan ji, bilkul. Toh basically, ye program free hai, aur aapko bas apne time pe join karna hai. Theek hai?"}
+@app.get("/sample2")
+async def sample2(v: str, t: str = "A", pace: float = 1.0, temp: float = 0.6, l: str = "hi-IN"):
+    if v not in SAMPLE_OK or t not in NAT_TXT or not (0.7 <= pace <= 1.3) or not (0.1 <= temp <= 1.0): raise HTTPException(400, "no")
+    mdl, spk = v.split(":"); t0 = time.time()
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
+            json={"text": NAT_TXT[t], "language_code": l, "model": "bulbul:v3" if mdl == "v3" else "bulbul:v4-flash", "speaker": spk, "pace": pace, "temperature": temp, "output_audio_codec": "mp3"})
+    if r.status_code != 200: raise HTTPException(502, f"{r.status_code}: {r.text[:300]}")
+    return Response(base64.b64decode(r.json()["audios"][0]), media_type="audio/mpeg", headers={"x-secs": f"{time.time()-t0:.2f}"})
