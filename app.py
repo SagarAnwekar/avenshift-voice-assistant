@@ -565,3 +565,16 @@ async def retell_twiml(c: str = ""):
     import re
     if not re.fullmatch(r"[A-Za-z0-9_\-]{8,80}", c): raise HTTPException(400, "bad")
     return twiml('<Dial answerOnBridge="true"><Sip>sip:' + c + '@sip.retellai.com</Sip></Dial>')
+
+
+@app.post("/retell/twstat")
+async def retell_twstat(sid: str = Form(...), secret: str = Form(...)):
+    if hashlib.sha256(secret.encode()).hexdigest() != "561f2bf55807e3751013fe672ca67277e5877b3fc752eae694b5366ab4d968c4": raise HTTPException(401, "no")
+    out = {}
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls/{sid}.json", auth=(TW_SID, TW_TOKEN)); j = r.json()
+        out["call"] = {k: j.get(k) for k in ("status", "duration", "price", "answered_by", "to", "from", "start_time", "end_time")}
+        n = await c.get(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls/{sid}/Notifications.json", auth=(TW_SID, TW_TOKEN)); out["notes"] = [{k: x.get(k) for k in ("error_code", "message_text", "log")} for x in n.json().get("notifications", [])][:5]
+        b = await c.get(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Balance.json", auth=(TW_SID, TW_TOKEN)); out["balance"] = b.json()
+        a = await c.get(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}.json", auth=(TW_SID, TW_TOKEN)); out["acct_type"] = a.json().get("type")
+    return out
