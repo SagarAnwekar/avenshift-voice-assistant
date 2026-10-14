@@ -413,7 +413,7 @@ def pick_filler(voice):
 
 async def compute_reply(c):
     memo = notes_for(c["phone"])
-    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' LIVE CALL: sound warm, upbeat and enthusiastic like a friendly young Indian man, show interest in what they said, never flat or robotic. If they ask about the course, explain in 1-2 sentences using only approved facts (what the webinar covers, AI for Python/data, free webinar with certificate) and say full course details will be shared on WhatsApp; never state any fee. Reply in at most 2 short sentences, under 25 words total, no lists. Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
+    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' LIVE CALL: sound warm, upbeat and enthusiastic like a friendly young Indian man, show interest in what they said, never flat or robotic. If they ask about the course, explain in 1-2 sentences using only approved facts (what the webinar covers, AI for Python/data, free webinar with certificate) and say full course details will be shared on WhatsApp; never state any fee. Reply in at most 2 very short sentences, under 15 words total, no lists. Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
     contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in c["hist"][-24:]]
     _t = time.time()
     try: raw = await brain_race(contents, sysm)
