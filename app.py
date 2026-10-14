@@ -236,7 +236,7 @@ async def tts(text, lang, voice=""):
             try:
                 async with httpx.AsyncClient(timeout=20) as c:
                     r = await c.post("https://api.sarvam.ai/text-to-speech", headers={"api-subscription-key": SARVAM},
-                        json={"text": text[:2400], "language_code": lg, "model": "bulbul:v4-flash", "speaker": V4_SPK, "pace": 0.95, "temperature": 0.8, "output_audio_codec": "mp3"})
+                        json={"text": text[:2400], "language_code": lg, "model": "bulbul:v4-flash", "speaker": V4_SPK, "pace": 1.08, "temperature": 1.0, "output_audio_codec": "mp3"})
                 if r.status_code == 200: return r.json()["audios"][0]
                 print("v4 tts fail", lg, r.status_code, r.text[:120], flush=True)
             except Exception as e: print("v4 tts exc", type(e).__name__, flush=True)
@@ -360,7 +360,7 @@ async def tw_call(to: str = Form(...), name: str = Form(...), mode: str = Form("
     except Exception as e: print("intro pregen failed", e, flush=True)
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN),
-            data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/twilio/voice?cid={cid}", "StatusCallback": f"{PUBLIC}/twilio/status?cid={cid}", "StatusCallbackEvent": "completed"})
+            data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/twilio/voice?cid={cid}", "StatusCallback": f"{PUBLIC}/twilio/status?cid={cid}", "StatusCallbackEvent": "completed", "Record": "true", "RecordingChannels": "dual", "RecordingStatusCallback": f"{PUBLIC}/twilio/rec?cid={cid}", "RecordingStatusCallbackEvent": "completed"})
     if r.status_code >= 300: raise HTTPException(502, "twilio: " + r.text[:200])
     return {"ok": True, "cid": cid}
 
@@ -376,7 +376,7 @@ async def say_play(text, lang, voice=""):
 
 def gather(cid, lang, play=""):
     inner = f"<Play>{play}</Play>" if play else ""
-    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" hints="yes,haan,ha,haan ji,ji,theek hai,nahi,no,okay,sure" speechModel="phone_call" enhanced="true" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
+    return f'<Gather input="speech" bargeIn="true" language="{lang}" speechTimeout="auto" hints="yes,haan,ha,haan ji,ji,theek hai,nahi,no,okay,sure" speechModel="googlev2_chirp_3" timeout="10" action="{PUBLIC}/twilio/turn?cid={cid}">{inner}</Gather><Redirect method="POST">{PUBLIC}/twilio/turn?cid={cid}</Redirect>'
 
 @app.post("/twilio/voice")
 async def tw_voice(request: Request, cid: str):
@@ -406,7 +406,7 @@ def pick_filler(voice):
 
 async def compute_reply(c):
     memo = notes_for(c["phone"])
-    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' LIVE CALL: reply in at most 2 short sentences, under 25 words total, no lists. Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
+    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' LIVE CALL: sound warm, upbeat and enthusiastic like a friendly young Indian man, show interest in what they said, never flat or robotic. If they ask about the course, explain in 1-2 sentences using only approved facts (what the webinar covers, AI for Python/data, free webinar with certificate) and say full course details will be shared on WhatsApp; never state any fee. Reply in at most 2 short sentences, under 25 words total, no lists. Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
     contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in c["hist"][-24:]]
     _t = time.time()
     try: raw = await brain_race(contents, sysm)
@@ -444,7 +444,7 @@ async def tw_turn(request: Request, cid: str):
     except Exception: pass
     c["task"] = asyncio.create_task(compute_reply(c))   # brain + voice run while the filler plays
     f = pick_filler(c.get("voice", ""))
-    if f: return twiml(f'<Gather input="speech" bargeIn="true" language="{"en-IN" if c["lang"] == "en-IN" else "hi-IN"}" speechTimeout="1" speechModel="phone_call" enhanced="true" timeout="1" action="{PUBLIC}/twilio/turn?cid={cid}"><Play>{f}</Play></Gather><Redirect method="POST">{PUBLIC}/twilio/reply?cid={cid}</Redirect>')
+    if f: return twiml(f'<Play>{f}</Play><Redirect method="POST">{PUBLIC}/twilio/reply?cid={cid}</Redirect>')
     gl, url = await c["task"]; return twiml(gather(cid, gl, url))
 
 @app.post("/twilio/reply")
@@ -455,6 +455,18 @@ async def tw_reply(request: Request, cid: str):
     try: gl, url = await c["task"]
     except (Exception, asyncio.CancelledError): return twiml("<Say>Sorry, network issue. We will call you back. Goodbye.</Say><Hangup/>")
     return twiml(gather(cid, gl, url))
+
+@app.post("/twilio/rec")
+async def tw_rec(request: Request, cid: str):
+    form = dict(await request.form()); await tw_check(request, form)
+    u = form.get("RecordingUrl", "")
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.get(u + ".mp3", auth=(TW_SID, TW_TOKEN), follow_redirects=True)
+        aid = "rec" + cid; AUDIO[aid] = base64.b64encode(r.content).decode()
+        print("RECLINK", f"{PUBLIC}/audio/{aid}.mp3", len(r.content), flush=True)
+    except Exception as e: print("rec fail", e, flush=True)
+    return Response("ok")
 
 @app.post("/twilio/status")
 async def tw_status(request: Request, cid: str):
