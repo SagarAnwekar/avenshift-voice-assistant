@@ -554,7 +554,14 @@ async def retell_call(to: str = Form(...), agent_id: str = Form(...), rkey: str 
         if rr.status_code >= 300: raise HTTPException(502, "retell: " + rr.text[:200])
         cid = rr.json()["call_id"]
         tw = '<Response><Dial answerOnBridge="true"><Sip>sip:' + cid + '@sip.retellai.com</Sip></Dial></Response>'
-        r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN), data={"To": to, "From": TW_FROM, "Twiml": tw})
+        r = await c.post(f"https://api.twilio.com/2010-04-01/Accounts/{TW_SID}/Calls.json", auth=(TW_SID, TW_TOKEN), data={"To": to, "From": TW_FROM, "Url": f"{PUBLIC}/retell/twiml?c={cid}"})
     print("RETELL TWILIO", r.status_code, r.text[:200], flush=True)
     if r.status_code >= 300: raise HTTPException(502, "twilio: " + r.text[:200])
     return {"ok": True, "retell_call_id": cid, "twilio_sid": r.json().get("sid")}
+
+
+@app.api_route("/retell/twiml", methods=["GET", "POST"])
+async def retell_twiml(c: str = ""):
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{8,80}", c): raise HTTPException(400, "bad")
+    return twiml('<Dial answerOnBridge="true"><Sip>sip:' + c + '@sip.retellai.com</Sip></Dial>')
