@@ -282,13 +282,13 @@ AUDIO, CALLS = {}, {}
 def intro_for(name, mode, lang, phone):
     en = lang == "en-IN"
     demo = phone in ALLOWED and not os.environ.get("LEAD_MODE_ALWAYS")   # demo_mode: own number; lead_mode: anyone else
-    if mode == "rem": t = (FACTS["caller_intro_reminder_en"] if en else FACTS["caller_intro_reminder"]).replace("{name}", name)
-    else: t = ("Hi " + name + ". " + FACTS["caller_intro_en"].replace("Hello, ", "", 1).capitalize()) if en else (name + " ji, " + FACTS["caller_intro"].replace("Namaste, ", "", 1))
-    if demo:
-        t = t.replace("Sagar ka AI assistant bol raha hoon", "Sagar bol raha hoon").replace("I'm Sagar's AI assistant", "this is Sagar")
+    who = "Hi, I am Sagar from NextLearn." if demo else "Hi, I am from NextLearn's AI voice team."
+    if mode == "rem":
+        t = who + " " + ((FACTS["caller_intro_reminder_en"].split("NextLearn. ",1)[-1]).replace("{name}", name) if en else (FACTS["caller_intro_reminder"].split("baare me. ",1)[-1]).replace("{name}", name))
     else:
-        t = t.replace("Sagar ka AI assistant bol raha hoon", "Sagar ki AI voice team se bol raha hoon").replace("I'm Sagar's AI assistant", "I'm from Sagar's AI voice team")
-        t += " This call may be recorded." if en else " Call record ho sakti hai."
+        rest = FACTS["caller_intro_en"].split("NextLearn. ",1)[-1] if en else FACTS["caller_intro"].split("baare me. ",1)[-1]
+        t = who + " " + rest
+    if not demo: t += " This call may be recorded." if en else " Call record ho sakti hai."
     return t
 
 def twiml(body): return Response('<?xml version="1.0" encoding="UTF-8"?><Response>' + body + "</Response>", media_type="application/xml")
