@@ -128,7 +128,7 @@ import re
 def clean_reply(t):
     t = re.sub(r"[*_`#>\[\]]+", "", t); t = re.sub(r"\s+", " ", t).strip()
     s = re.split(r"(?<=[.!?।])\s+", t)
-    return " ".join(s[:3])[:400]
+    return " ".join(s[:2])[:220]
 
 def sys_for(phone): return SYS + (DEMO_NOTE if phone in ALLOWED else "")
 
@@ -166,6 +166,39 @@ async def gemini(contents, system=SYS, json_out=False, brain=""):
     if GEMINI and brain not in ("", "gemini"):
         return await gemini(contents, system, json_out, "gemini")
     raise HTTPException(502, "brain failed: " + ", ".join(errs))
+
+async def _g_call(contents, system, json_out, tmo=8):
+    body = {"system_instruction": {"parts": [{"text": system}]}, "contents": contents}
+    if json_out: body["generationConfig"] = {"responseMimeType": "application/json"}
+    async with httpx.AsyncClient(timeout=tmo) as c:
+        r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GMODEL}:generateContent", headers={"x-goog-api-key": GEMINI}, json=body)
+    if r.status_code != 200: raise RuntimeError(f"gemini {r.status_code}")
+    return "gemini", r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+async def _f_call(name, url, key, model, contents, system, json_out, tmo=8):
+    msgs = [{"role": "system", "content": system + (" Respond with JSON only." if json_out else "")}] + [
+        {"role": "assistant" if c["role"] == "model" else "user", "content": c["parts"][0]["text"]} for c in contents]
+    async with httpx.AsyncClient(timeout=tmo) as c:
+        r = await c.post(url, headers={"Authorization": "Bearer " + key}, json={"model": model, "messages": msgs, "temperature": 0.4})
+    if r.status_code != 200: raise RuntimeError(f"{name} {r.status_code}")
+    return name, r.json()["choices"][0]["message"]["content"]
+
+async def brain_race(contents, system):
+    """Live-turn brain: Gemini and Groq start together, first good answer wins, 8 s cap each."""
+    tasks = []
+    if GEMINI: tasks.append(asyncio.create_task(_g_call(contents, system, True)))
+    for name, url, envk, model in FALLBACKS:
+        if name == "groq" and os.environ.get(envk): tasks.append(asyncio.create_task(_f_call(name, url, os.environ[envk], model, contents, system, True)))
+    pending = set(tasks); errs = []
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for d in done:
+            try:
+                who, txt = d.result()
+                for p in pending: p.cancel()
+                print("brain_winner", who, flush=True); return txt
+            except Exception as e: errs.append(str(e)[:40])
+    raise RuntimeError("race failed " + ",".join(errs))
 
 def notes_for(phone):
     s = load(); n = s.get("notes", {}).get(phone)
@@ -364,10 +397,13 @@ def pick_filler(voice):
 
 async def compute_reply(c):
     memo = notes_for(c["phone"])
-    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
+    sysm = sys_for(c["phone"]) + ((" Earlier notes: " + json.dumps(memo, ensure_ascii=False)) if memo else "") + ' LIVE CALL: reply in at most 2 short sentences, under 25 words total, no lists. Return JSON only: {"reply":"...","lang":"hi-IN|en-IN|mr-IN|kn-IN"}'
     contents = [{"role": "user" if h["who"] == "person" else "model", "parts": [{"text": h["text"]}]} for h in c["hist"][-24:]]
     _t = time.time()
-    raw = await gemini(contents, system=sysm, json_out=True, brain=VARIANTS.get(c.get("variant","A"), VARIANTS["A"])[2])
+    try: raw = await brain_race(contents, sysm)
+    except Exception as e:
+        print("race failed, falling back", e, flush=True)
+        raw = await gemini(contents, system=sysm, json_out=True, brain=VARIANTS.get(c.get("variant","A"), VARIANTS["A"])[2])
     _bs = round(time.time() - _t, 2)
     print("brain_secs", _bs, flush=True)
     try: j = json.loads(raw); reply, lang = clean_reply(str(j["reply"])), j.get("lang") or "hi-IN"
